@@ -10,7 +10,7 @@ import { useState, useMemo, useRef, useEffect } from 'react'
 // ─── TYPES ─────────────────────────────────────────────────────────────────
 
 type Classification = 'critico' | 'ruptura' | 'atencao' | 'saudavel' | 'excesso' | 'parado'
-type Tab = 'overview' | 'cash-leak' | 'revenue-risk' | 'import-ai' | 'not-buy' | 'simulation'
+type Tab = 'overview' | 'cash-leak' | 'revenue-risk' | 'import-ai' | 'not-buy' | 'simulation' | 'integrations'
 type Recommendation = 'comprar-urgente' | 'comprar' | 'manter' | 'pausar' | 'promover' | 'liquidar' | 'descontinuar'
 
 interface SKU {
@@ -534,6 +534,11 @@ export default function Page() {
     leadTimeDias: 60, estoqueSegurancaDias: 15, orcamentoCompra: 100000, metaReducaoParado: 30,
   })
 
+  const [wcLoading, setWcLoading] = useState(false)
+  const [wcResult, setWcResult] = useState<any>(null)
+  const [wcError, setWcError] = useState('')
+  const [sancoStatus, setSancoStatus] = useState('Integração preparada. Aguardando credenciais e endpoint final da Escalasoft.')
+
   // Auto-load mock on mount
   useEffect(() => {
     const result = processData(MOCK_STOCK, MOCK_CONSUMO, '', DEFAULT_PARAMS)
@@ -602,6 +607,55 @@ export default function Page() {
     setHasData(true)
     setShowImport(false)
     setTab('overview')
+  }
+
+  async function testWooCommerceConnection() {
+    setWcLoading(true)
+    setWcError('')
+    setWcResult(null)
+
+    try {
+      const response = await fetch('/api/woocommerce/orders', {
+        method: 'GET',
+        cache: 'no-store',
+      })
+
+      const contentType = response.headers.get('content-type') || ''
+      const data = contentType.includes('application/json') ? await response.json() : { raw: await response.text() }
+
+      if (!response.ok) {
+        throw new Error(data?.error || data?.message || `Erro HTTP ${response.status} ao consultar WooCommerce`)
+      }
+
+      setWcResult(data)
+    } catch (err: any) {
+      setWcError(err?.message || 'Erro desconhecido ao testar WooCommerce')
+    } finally {
+      setWcLoading(false)
+    }
+  }
+
+  async function testSancoConnection() {
+    setSancoStatus('Testando estrutura de sincronização...')
+
+    try {
+      const response = await fetch('/api/cron/sync-hourly', {
+        method: 'GET',
+        cache: 'no-store',
+      })
+
+      const contentType = response.headers.get('content-type') || ''
+      const data = contentType.includes('application/json') ? await response.json() : { raw: await response.text() }
+
+      if (!response.ok) {
+        setSancoStatus(`Estrutura pronta, mas endpoint retornou HTTP ${response.status}. Falta validar credenciais e rota final da Escalasoft.`)
+        return
+      }
+
+      setSancoStatus(`Estrutura de integração respondendo. Retorno: ${JSON.stringify(data).slice(0, 180)}`)
+    } catch {
+      setSancoStatus('Integração preparada. Falta validar credenciais, autenticação e endpoint final da Escalasoft.')
+    }
   }
 
   // ─── Filtered data ───
@@ -689,6 +743,7 @@ export default function Page() {
     { id: 'import-ai', label: 'Import order AI', icon: 'truck' },
     { id: 'not-buy', label: 'What not to buy', icon: 'block' },
     { id: 'simulation', label: 'Business simulation', icon: 'sliders' },
+    { id: 'integrations', label: 'Integrações', icon: 'target' },
   ]
 
   return (
@@ -1324,6 +1379,191 @@ export default function Page() {
                     </p>
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ════ INTEGRAÇÕES ════ */}
+        {tab === 'integrations' && (
+          <div className="space-y-6">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-400">Data Integration Hub</p>
+                <h1 className="mt-2 text-2xl font-semibold tracking-tight">Integrações operacionais</h1>
+                <p className="mt-1 max-w-3xl text-sm text-zinc-500">
+                  Conecte vendas, estoque e histórico para transformar o MVP em um motor real de decisão de compra, caixa e ruptura.
+                </p>
+              </div>
+              <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-medium text-emerald-400">
+                MVP preparado para API
+              </span>
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-3">
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-base font-semibold">WooCommerce</h2>
+                    <p className="mt-1 text-xs font-medium text-emerald-400">Pronto para conectar</p>
+                  </div>
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
+                    <Icon name="cash" />
+                  </div>
+                </div>
+
+                <p className="text-sm leading-6 text-zinc-500">
+                  Fonte de pedidos, SKUs vendidos, receita, preço médio, datas de compra e velocidade de venda.
+                </p>
+
+                <div className="mt-4 grid gap-2 text-xs text-zinc-400">
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Pedidos reais e status de pagamento</div>
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Demanda por SKU e cor</div>
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Receita, ticket e margem estimada</div>
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Previsão de ruptura baseada em vendas</div>
+                </div>
+
+                <button
+                  onClick={testWooCommerceConnection}
+                  disabled={wcLoading}
+                  className="mt-5 w-full rounded-md bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {wcLoading ? 'Testando conexão...' : 'Testar conexão WooCommerce'}
+                </button>
+
+                {wcResult && (
+                  <div className="mt-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3">
+                    <p className="text-xs font-semibold text-emerald-300">Conectado com sucesso</p>
+                    <p className="mt-1 text-[11px] text-zinc-400">
+                      Pedidos encontrados: {wcResult.count ?? wcResult.orders?.length ?? 0}
+                    </p>
+                    <p className="mt-1 text-[11px] text-zinc-500">
+                      Última sincronização: {new Date().toLocaleString('pt-BR')}
+                    </p>
+
+                    {Array.isArray(wcResult.orders) && wcResult.orders.length > 0 && (
+                      <div className="mt-3 space-y-1.5">
+                        {wcResult.orders.slice(0, 3).map((order: any) => (
+                          <div key={order.id} className="rounded-md border border-emerald-500/20 bg-zinc-950/40 px-2 py-1.5 text-[11px] text-zinc-300">
+                            Pedido #{order.id} · {order.status} · R$ {order.total}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {wcError && (
+                  <div className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3">
+                    <p className="text-xs font-semibold text-rose-300">Erro na conexão</p>
+                    <p className="mt-1 text-[11px] text-zinc-400">{wcError}</p>
+                    <p className="mt-1 text-[11px] text-zinc-500">
+                      Verifique se WC_STORE_URL, WC_CONSUMER_KEY e WC_CONSUMER_SECRET estão configuradas na Vercel.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-base font-semibold">SANCO / Escalasoft</h2>
+                    <p className="mt-1 text-xs font-medium text-amber-400">Em validação</p>
+                  </div>
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10 text-amber-400">
+                    <Icon name="truck" />
+                  </div>
+                </div>
+
+                <p className="text-sm leading-6 text-zinc-500">
+                  Fonte de estoque, movimentação, permanência, entrada e saída de mercadoria.
+                </p>
+
+                <div className="mt-4 grid gap-2 text-xs text-zinc-400">
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Estoque sempre atualizado</div>
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Movimentação automática</div>
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Permanência real por SKU</div>
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Alertas em tempo real</div>
+                </div>
+
+                <button
+                  onClick={testSancoConnection}
+                  className="mt-5 w-full rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-800"
+                >
+                  Testar API SANCO
+                </button>
+
+                <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+                  <p className="text-[11px] leading-5 text-zinc-400">{sancoStatus}</p>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-base font-semibold">CSV Manual</h2>
+                    <p className="mt-1 text-xs font-medium text-emerald-400">Ativo no MVP</p>
+                  </div>
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10 text-blue-400">
+                    <Icon name="upload" />
+                  </div>
+                </div>
+
+                <p className="text-sm leading-6 text-zinc-500">
+                  Fallback seguro para importar relatórios atuais da SANCO enquanto as APIs são validadas.
+                </p>
+
+                <div className="mt-4 grid gap-2 text-xs text-zinc-400">
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Estoque atual</div>
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Maior movimentação</div>
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Maior permanência</div>
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Análise instantânea</div>
+                </div>
+
+                <button
+                  onClick={() => setShowImport(true)}
+                  className="mt-5 w-full rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-800"
+                >
+                  Importar CSV
+                </button>
+
+                <div className="mt-4 rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
+                  <p className="text-[11px] leading-5 text-zinc-400">
+                    O CSV mantém o MVP funcional mesmo sem depender das APIs no dia da apresentação.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 p-6">
+              <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-500">Arquitetura de dados</p>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-4">
+                <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">
+                  <p className="text-sm font-semibold text-zinc-100">WooCommerce</p>
+                  <p className="mt-1 text-xs text-zinc-500">Motor de demanda</p>
+                </div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">
+                  <p className="text-sm font-semibold text-zinc-100">SANCO / Escalasoft</p>
+                  <p className="mt-1 text-xs text-zinc-500">Motor de estoque</p>
+                </div>
+                <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">
+                  <p className="text-sm font-semibold text-zinc-100">Neon / Postgres</p>
+                  <p className="mt-1 text-xs text-zinc-500">Histórico e inteligência</p>
+                </div>
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+                  <p className="text-sm font-semibold text-emerald-300">STL Business Intelligence</p>
+                  <p className="mt-1 text-xs text-zinc-400">Compra, caixa e ruptura</p>
+                </div>
+              </div>
+
+              <div className="mt-5 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
+                <p className="text-sm font-medium text-zinc-200">Mensagem para o hackathon</p>
+                <p className="mt-2 text-sm leading-6 text-zinc-500">
+                  Hoje o MVP funciona por CSV. A arquitetura já está preparada para substituir upload manual por integrações automáticas:
+                  WooCommerce alimenta demanda e receita, SANCO/Escalasoft alimenta estoque e movimentação, Neon armazena histórico e o
+                  STL Business Stock Intelligence transforma tudo em decisão financeira.
+                </p>
               </div>
             </div>
           </div>

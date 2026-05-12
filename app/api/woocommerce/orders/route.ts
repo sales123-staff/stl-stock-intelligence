@@ -73,7 +73,7 @@ export async function GET() {
 
     const allOrders: WooOrder[] = [];
     const perPage = 100;
-    const maxPages = 50;
+    const maxPages = 1;
 
     for (let page = 1; page <= maxPages; page++) {
       const url = new URL(`${storeUrl}/wp-json/wc/v3/orders`);

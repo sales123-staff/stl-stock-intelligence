@@ -55,7 +55,7 @@ interface AppParams {
 
 const DEFAULT_PARAMS: AppParams = {
   leadTimeDias: 60,
-  periodoRelatorioDias: 30,
+  periodoRelatorioDias: 90,
   estoqueSegurancaDias: 15,
   margemPadrao: 0.45,
 }
@@ -283,6 +283,27 @@ function exportCSV(rows: any[], filename: string) {
   a.href = URL.createObjectURL(blob)
   a.download = filename
   a.click()
+}
+
+function escapeCsvValue(value: any) {
+  return String(value ?? '')
+    .replace(/;/g, ',')
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+}
+
+
+function buildConsumoCsvFromWoo(skuSummary: any[]) {
+  const rows = skuSummary
+    .filter((item) => item.sku && Number(item.quantity || 0) > 0)
+    .map((item) => {
+      const sku = escapeCsvValue(item.sku)
+      const name = escapeCsvValue(item.name || item.sku)
+      const quantity = Number(item.quantity || 0)
+      return `${sku};${name};${quantity}`
+    })
+
+  return ['Codigo;Produto;Quantidade', ...rows].join('\n')
 }
 
 // ─── MOCK DATA ─────────────────────────────────────────────────────────────
@@ -589,23 +610,65 @@ export default function Page() {
         const text = e.target?.result as string
         const type = detectCSVType(text)
         const rows = parseCSV(text).length
-        if (type === 'stock') { setStockRaw(text); setUploadedFiles(p => [...p.filter(f => f.type !== 'stock'), { name: file.name, type, rows }]) }
-        else if (type === 'consumption') { setConsumoRaw(text); setUploadedFiles(p => [...p.filter(f => f.type !== 'consumption'), { name: file.name, type, rows }]) }
-        else if (type === 'coverage') { setMesesRaw(text); setUploadedFiles(p => [...p.filter(f => f.type !== 'coverage'), { name: file.name, type, rows }]) }
-        else setError(`Arquivo "${file.name}" não reconhecido.`)
+
+        if (type === 'stock') {
+          setStockRaw(text)
+          setConsumoRaw('')
+          setMesesRaw('')
+          setUploadedFiles([{ name: file.name, type: 'stock', rows }])
+          return
+        }
+
+        setError(`Arquivo "${file.name}" não parece ser o CSV de estoque atual da SANCO. Exporte a tabela de estoque atual e tente novamente.`)
       }
       reader.readAsText(file, 'UTF-8')
     })
   }
 
-  function handleProcess() {
-    if (!stockRaw || !consumoRaw) { setError('Necessário ao menos estoque e consumo.'); return }
-    const result = processData(stockRaw, consumoRaw, mesesRaw, params)
-    setData(result)
-    setHasData(true)
-    setShowImport(false)
-    setTab('overview')
+
+  async function handleProcess() {
+    setError('')
+
+    if (!stockRaw) {
+      setError('Importe o CSV de estoque atual da SANCO. A demanda será puxada automaticamente do WooCommerce.')
+      return
+    }
+
+    try {
+      const response = await fetch('/api/woocommerce/orders', {
+        method: 'GET',
+        cache: 'no-store',
+      })
+
+      const wooData = await response.json()
+
+      if (!response.ok || !wooData.ok) {
+        throw new Error(wooData?.error || 'Erro ao buscar pedidos do WooCommerce.')
+      }
+
+      if (!Array.isArray(wooData.skuSummary) || wooData.skuSummary.length === 0) {
+        throw new Error('Nenhuma venda por SKU encontrada no WooCommerce para o período configurado.')
+      }
+
+      const wooConsumoCsv = buildConsumoCsvFromWoo(wooData.skuSummary)
+      const periodoDias = 90
+      const paramsComWoo = { ...params, periodoRelatorioDias: periodoDias }
+
+      setConsumoRaw(wooConsumoCsv)
+      setMesesRaw('')
+      setParams(paramsComWoo)
+
+      const result = processData(stockRaw, wooConsumoCsv, '', paramsComWoo)
+
+      setData(result)
+      setHasData(true)
+      setShowImport(false)
+      setTab('overview')
+    } catch (error: any) {
+      setError(error?.message || 'Erro ao processar estoque SANCO com pedidos WooCommerce.')
+    }
   }
+
 
   function handleLoadMock() {
     const result = processData(MOCK_STOCK, MOCK_CONSUMO, '', params)
@@ -890,8 +953,8 @@ export default function Page() {
                 className="lg:col-span-2 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/30 p-8 transition hover:border-emerald-500/50 hover:bg-zinc-900/50"
               >
                 <Icon name="upload" className="w-8 h-8 text-zinc-500" />
-                <p className="text-sm font-medium">Arraste CSVs ou clique para selecionar</p>
-                <p className="text-[11px] text-zinc-500">SANCO: estoque · consumo · cobertura — detecção automática</p>
+                <p className="text-sm font-medium">Arraste o CSV de estoque SANCO ou clique para selecionar</p>
+                <p className="text-[11px] text-zinc-500">Importe apenas o CSV de estoque atual da SANCO. A demanda vem automaticamente do WooCommerce dos últimos 3 meses.</p>
                 <input ref={inputRef} type="file" multiple accept=".csv" className="hidden" onChange={e => e.target.files && handleFiles(e.target.files)} />
                 {uploadedFiles.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-2 justify-center">
@@ -910,7 +973,7 @@ export default function Page() {
                   <div className="space-y-3">
                     {([
                       ['Lead time China', 'leadTimeDias', 'dias'],
-                      ['Período do consumo', 'periodoRelatorioDias', 'dias'],
+                      ['Período WooCommerce', 'periodoRelatorioDias', 'dias'],
                       ['Estoque de segurança', 'estoqueSegurancaDias', 'dias'],
                     ] as const).map(([label, key, unit]) => (
                       <div key={key} className="flex items-center justify-between gap-3">
@@ -932,7 +995,7 @@ export default function Page() {
 
                 <div className="flex gap-2">
                   <button onClick={handleProcess} className="flex-1 rounded-md bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-emerald-400">
-                    Processar dados
+                    Processar SANCO + WooCommerce
                   </button>
                   <button onClick={handleLoadMock} className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-medium text-zinc-300 transition hover:border-zinc-600">
                     Demo

@@ -97,6 +97,7 @@ const fmtBRLcompact = (n: number) => {
 }
 const fmtDias = (n: number) => (!isFinite(n) ? '∞' : `${Math.round(n)}d`)
 const fmtPct = (n: number) => `${n.toFixed(1)}%`
+const fmtDateTime = (d: string | Date) => new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(d))
 
 // ─── CSV PARSING ───────────────────────────────────────────────────────────
 
@@ -546,6 +547,16 @@ export default function Page() {
   const [mesesRaw, setMesesRaw] = useState('')
   const [uploadedFiles, setUploadedFiles] = useState<{ name: string; type: string; rows: number }[]>([])
   const [error, setError] = useState('')
+  const [processLoading, setProcessLoading] = useState(false)
+  const [dataSource, setDataSource] = useState<{
+    stockSource: string
+    demandSource: string
+    lastProcessed: string
+    wooOrders?: number
+    wooSkus?: number
+    wooItems?: number
+    wooRevenue?: number
+  }>({ stockSource: 'Demo interna', demandSource: 'Demo interna', lastProcessed: '' })
   const inputRef = useRef<HTMLInputElement>(null)
 
   const [search, setSearch] = useState('')
@@ -572,6 +583,11 @@ export default function Page() {
     setData(result)
     setHasData(true)
     setShowImport(false)
+    setDataSource({
+      stockSource: 'Demo interna',
+      demandSource: 'Demo interna',
+      lastProcessed: new Date().toISOString(),
+    })
   }, [])
 
   // ─── Summary ───
@@ -604,37 +620,43 @@ export default function Page() {
   // ─── File handling ───
   function handleFiles(files: FileList) {
     setError('')
-    Array.from(files).forEach(file => {
-      const reader = new FileReader()
-      reader.onload = e => {
-        const text = e.target?.result as string
-        const type = detectCSVType(text)
-        const rows = parseCSV(text).length
 
-        if (type === 'stock') {
-          setStockRaw(text)
-          setConsumoRaw('')
-          setMesesRaw('')
-          setUploadedFiles([{ name: file.name, type: 'stock', rows }])
-          return
-        }
+    const file = Array.from(files)[0]
+    if (!file) return
 
+    const reader = new FileReader()
+    reader.onload = e => {
+      const text = e.target?.result as string
+      const type = detectCSVType(text)
+      const rows = parseCSV(text).length
+
+      const looksLikeSancoStock =
+        type === 'stock' ||
+        (text.includes('Codigo') && text.includes('Produto') && text.includes('Quantidade disponível'))
+
+      if (!looksLikeSancoStock) {
         setError(`Arquivo "${file.name}" não parece ser o CSV de estoque atual da SANCO. Exporte a tabela de estoque atual e tente novamente.`)
+        return
       }
-      reader.readAsText(file, 'UTF-8')
-    })
-  }
 
+      setStockRaw(text)
+      setConsumoRaw('')
+      setMesesRaw('')
+      setUploadedFiles([{ name: file.name, type: 'stock', rows }])
+      setDataSource(prev => ({ ...prev, stockSource: `CSV SANCO · ${file.name}` }))
+    }
+    reader.readAsText(file, 'UTF-8')
+  }
 
   async function handleProcess() {
     setError('')
-
-    if (!stockRaw) {
-      setError('Importe o CSV de estoque atual da SANCO. A demanda será puxada automaticamente do WooCommerce.')
-      return
-    }
+    setProcessLoading(true)
 
     try {
+      if (!stockRaw) {
+        throw new Error('Importe o CSV de estoque atual da SANCO. A demanda será puxada automaticamente do WooCommerce.')
+      }
+
       const response = await fetch('/api/woocommerce/orders', {
         method: 'GET',
         cache: 'no-store',
@@ -651,7 +673,7 @@ export default function Page() {
       }
 
       const wooConsumoCsv = buildConsumoCsvFromWoo(wooData.skuSummary)
-      const periodoDias = 90
+      const periodoDias = Number(params.periodoRelatorioDias || 90)
       const paramsComWoo = { ...params, periodoRelatorioDias: periodoDias }
 
       setConsumoRaw(wooConsumoCsv)
@@ -664,11 +686,21 @@ export default function Page() {
       setHasData(true)
       setShowImport(false)
       setTab('overview')
+      setDataSource({
+        stockSource: uploadedFiles[0]?.name ? `CSV SANCO · ${uploadedFiles[0].name}` : 'CSV SANCO',
+        demandSource: `WooCommerce · ${wooData.count ?? 0} pedidos válidos`,
+        lastProcessed: new Date().toISOString(),
+        wooOrders: wooData.count ?? 0,
+        wooSkus: wooData.skuCount ?? wooData.skuSummary.length,
+        wooItems: wooData.totalItems ?? 0,
+        wooRevenue: wooData.totalRevenue ?? 0,
+      })
     } catch (error: any) {
       setError(error?.message || 'Erro ao processar estoque SANCO com pedidos WooCommerce.')
+    } finally {
+      setProcessLoading(false)
     }
   }
-
 
   function handleLoadMock() {
     const result = processData(MOCK_STOCK, MOCK_CONSUMO, '', params)
@@ -676,56 +708,13 @@ export default function Page() {
     setHasData(true)
     setShowImport(false)
     setTab('overview')
+    setDataSource({
+      stockSource: 'Demo interna',
+      demandSource: 'Demo interna',
+      lastProcessed: new Date().toISOString(),
+    })
   }
 
-  async function testWooCommerceConnection() {
-    setWcLoading(true)
-    setWcError('')
-    setWcResult(null)
-
-    try {
-      const response = await fetch('/api/woocommerce/orders', {
-        method: 'GET',
-        cache: 'no-store',
-      })
-
-      const contentType = response.headers.get('content-type') || ''
-      const data = contentType.includes('application/json') ? await response.json() : { raw: await response.text() }
-
-      if (!response.ok) {
-        throw new Error(data?.error || data?.message || `Erro HTTP ${response.status} ao consultar WooCommerce`)
-      }
-
-      setWcResult(data)
-    } catch (err: any) {
-      setWcError(err?.message || 'Erro desconhecido ao testar WooCommerce')
-    } finally {
-      setWcLoading(false)
-    }
-  }
-
-  async function testSancoConnection() {
-    setSancoStatus('Testando estrutura de sincronização...')
-
-    try {
-      const response = await fetch('/api/cron/sync-hourly', {
-        method: 'GET',
-        cache: 'no-store',
-      })
-
-      const contentType = response.headers.get('content-type') || ''
-      const data = contentType.includes('application/json') ? await response.json() : { raw: await response.text() }
-
-      if (!response.ok) {
-        setSancoStatus(`Estrutura pronta, mas endpoint retornou HTTP ${response.status}. Falta validar credenciais e rota final da Escalasoft.`)
-        return
-      }
-
-      setSancoStatus(`Estrutura de integração respondendo. Retorno: ${JSON.stringify(data).slice(0, 180)}`)
-    } catch {
-      setSancoStatus('Integração preparada. Falta validar credenciais, autenticação e endpoint final da Escalasoft.')
-    }
-  }
 
   // ─── Filtered data ───
   const filteredData = useMemo(() => {
@@ -904,7 +893,7 @@ export default function Page() {
                 <span className="flex h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
                 Conectado · WooCommerce + SANCO
                 <span className="text-zinc-700">·</span>
-                <span className="text-zinc-500">api.escalasoft.com.br</span>
+                <span className="text-zinc-500">CSV SANCO + Woo 90d</span>
               </div>
               <button
                 onClick={() => setShowImport(true)}
@@ -994,14 +983,41 @@ export default function Page() {
                 </div>
 
                 <div className="flex gap-2">
-                  <button onClick={handleProcess} className="flex-1 rounded-md bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-emerald-400">
-                    Processar SANCO + WooCommerce
+                  <button
+                    onClick={handleProcess}
+                    disabled={processLoading}
+                    className="flex-1 rounded-md bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {processLoading ? 'Processando WooCommerce...' : 'Processar SANCO + WooCommerce'}
                   </button>
                   <button onClick={handleLoadMock} className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-medium text-zinc-300 transition hover:border-zinc-600">
                     Demo
                   </button>
                 </div>
-                {error && <p className="text-xs text-rose-400">{error}</p>}
+
+                {processLoading && (
+                  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3">
+                    <p className="text-xs font-semibold text-emerald-300">Cruzando dados agora...</p>
+                    <p className="mt-1 text-[11px] leading-5 text-zinc-400">Estoque atual do CSV SANCO + pedidos WooCommerce válidos dos últimos {params.periodoRelatorioDias} dias.</p>
+                  </div>
+                )}
+
+                {error && (
+                  <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3">
+                    <p className="text-xs font-semibold text-rose-300">Não foi possível processar</p>
+                    <p className="mt-1 text-[11px] leading-5 text-zinc-400">{error}</p>
+                  </div>
+                )}
+
+                {dataSource.lastProcessed && (
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-500">Fonte atual</p>
+                    <p className="mt-2 text-[11px] text-zinc-300">Estoque: {dataSource.stockSource}</p>
+                    <p className="mt-1 text-[11px] text-zinc-300">Demanda: {dataSource.demandSource}</p>
+                    <p className="mt-1 text-[11px] text-zinc-500">Último processamento: {fmtDateTime(dataSource.lastProcessed)}</p>
+                  </div>
+                )}
+
                 {hasData && <button onClick={() => setShowImport(false)} className="w-full text-[11px] text-zinc-500 hover:text-zinc-300">Fechar painel</button>}
               </div>
             </div>
@@ -1020,6 +1036,29 @@ export default function Page() {
               <p className="mt-1 text-sm text-zinc-500">
                 Transformamos dados dispersos em decisões financeiras claras: o que comprar, o que parar de comprar e onde o caixa está preso.
               </p>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-4">
+              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-emerald-400">Estoque atual</p>
+                <p className="mt-2 truncate text-sm font-semibold text-zinc-100">{dataSource.stockSource}</p>
+                <p className="mt-1 text-[11px] text-zinc-500">Fonte oficial de saldo do dia</p>
+              </div>
+              <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-blue-400">Demanda real</p>
+                <p className="mt-2 truncate text-sm font-semibold text-zinc-100">{dataSource.demandSource}</p>
+                <p className="mt-1 text-[11px] text-zinc-500">Status: processando + enviado</p>
+              </div>
+              <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-violet-400">Volume analisado</p>
+                <p className="mt-2 text-sm font-semibold text-zinc-100">{dataSource.wooItems ? fmtNum(dataSource.wooItems) + ' un vendidas' : fmtNum(data.reduce((a,d)=>a+d.consumo,0)) + ' un'}</p>
+                <p className="mt-1 text-[11px] text-zinc-500">{dataSource.wooSkus ? `${dataSource.wooSkus} SKUs vendidos` : `${data.length} SKUs avaliados`}</p>
+              </div>
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-500">Atualizado em</p>
+                <p className="mt-2 text-sm font-semibold text-zinc-100">{dataSource.lastProcessed ? fmtDateTime(dataSource.lastProcessed) : 'Agora'}</p>
+                <p className="mt-1 text-[11px] text-zinc-500">Pronto para decisão de compra</p>
+              </div>
             </div>
 
             {/* Row 1: 4 main KPIs */}
@@ -1287,15 +1326,24 @@ export default function Page() {
               })
               if (items.length === 0) return null
               const config = {
-                alta: { color: 'rose', label: 'Prioridade alta', desc: 'Comprar imediatamente — risco de ruptura' },
-                media: { color: 'amber', label: 'Prioridade média', desc: 'Incluir no próximo pedido' },
-                baixa: { color: 'emerald', label: 'Prioridade baixa', desc: 'Pode aguardar próximo ciclo' },
+                alta: {
+                  label: 'Prioridade alta', desc: 'Comprar imediatamente — risco de ruptura',
+                  headerBg: 'bg-rose-500/5', dot: 'bg-rose-500', qty: 'text-rose-400',
+                },
+                media: {
+                  label: 'Prioridade média', desc: 'Incluir no próximo pedido',
+                  headerBg: 'bg-amber-500/5', dot: 'bg-amber-500', qty: 'text-amber-400',
+                },
+                baixa: {
+                  label: 'Prioridade baixa', desc: 'Pode aguardar próximo ciclo',
+                  headerBg: 'bg-emerald-500/5', dot: 'bg-emerald-500', qty: 'text-emerald-400',
+                },
               }[priority]
               return (
                 <div key={priority} className="rounded-xl border border-zinc-800 bg-zinc-900/30 overflow-hidden">
-                  <div className={`border-b border-zinc-800 bg-${config.color}-500/5 px-5 py-3`}>
+                  <div className={`border-b border-zinc-800 ${config.headerBg} px-5 py-3`}>
                     <div className="flex items-center gap-2">
-                      <span className={`h-2 w-2 rounded-full bg-${config.color}-500`}></span>
+                      <span className={`h-2 w-2 rounded-full ${config.dot}`}></span>
                       <p className="text-sm font-semibold">{config.label}</p>
                       <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">{items.length} SKUs · {fmtBRLcompact(items.reduce((a,d)=>a+d.valorSugestaoCompra,0))}</span>
                     </div>
@@ -1324,7 +1372,7 @@ export default function Page() {
                             <td className="px-4 py-2.5 text-right text-[12px] text-zinc-400">{fmtNum(d.estoqueUtil)}</td>
                             <td className="px-4 py-2.5 text-right text-[12px] text-zinc-400">{d.consumoDiario.toFixed(1)}</td>
                             <td className="px-4 py-2.5 text-right text-[12px] text-zinc-400">{fmtDias(d.diasCobertura)}</td>
-                            <td className={`px-4 py-2.5 text-right text-[13px] font-bold text-${config.color}-400`}>{fmtNum(d.sugestaoCompra)} un</td>
+                            <td className={`px-4 py-2.5 text-right text-[13px] font-bold ${config.qty}`}>{fmtNum(d.sugestaoCompra)} un</td>
                             <td className="px-4 py-2.5 text-right text-[12px] font-medium text-zinc-300">{fmtBRL(d.valorSugestaoCompra)}</td>
                             <td className="px-4 py-2.5 max-w-[260px]"><p className="truncate text-[11px] text-zinc-500">{d.motivo}</p></td>
                           </tr>

@@ -715,6 +715,59 @@ export default function Page() {
     })
   }
 
+  async function testWooCommerceConnection() {
+    setWcLoading(true)
+    setWcError('')
+    setWcResult(null)
+
+    try {
+      const response = await fetch('/api/woocommerce/orders', {
+        method: 'GET',
+        cache: 'no-store',
+      })
+
+      const contentType = response.headers.get('content-type') || ''
+      const result = contentType.includes('application/json')
+        ? await response.json()
+        : { ok: false, raw: await response.text() }
+
+      if (!response.ok || !result.ok) {
+        throw new Error(result?.error || result?.message || `Erro HTTP ${response.status} ao consultar WooCommerce`)
+      }
+
+      setWcResult(result)
+    } catch (err: any) {
+      setWcError(err?.message || 'Erro desconhecido ao testar WooCommerce')
+    } finally {
+      setWcLoading(false)
+    }
+  }
+
+  async function testSancoConnection() {
+    setSancoStatus('CSV SANCO ativo no MVP. A API oficial ainda depende da URL operacional correta da Escalasoft/SANCO.')
+
+    try {
+      const response = await fetch('/api/cron/sync-hourly', {
+        method: 'GET',
+        cache: 'no-store',
+      })
+
+      const contentType = response.headers.get('content-type') || ''
+      const result = contentType.includes('application/json')
+        ? await response.json()
+        : { raw: await response.text() }
+
+      if (!response.ok) {
+        setSancoStatus('CSV SANCO ativo no MVP. Estrutura de integração criada, mas API SANCO ainda não validada.')
+        return
+      }
+
+      setSancoStatus(`Estrutura de integração respondendo. Hoje o estoque oficial do MVP vem do CSV SANCO. Retorno técnico: ${JSON.stringify(result).slice(0, 160)}`)
+    } catch {
+      setSancoStatus('CSV SANCO ativo no MVP. A integração por API está preparada para quando a SANCO confirmar a URL operacional correta.')
+    }
+  }
+
 
   // ─── Filtered data ───
   const filteredData = useMemo(() => {
@@ -1675,7 +1728,7 @@ export default function Page() {
                 </div>
 
                 <button
-                  onClick={testWooConnection}
+                  onClick={testWooCommerceConnection}
                   disabled={wcLoading}
                   className="mt-5 w-full rounded-md bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
                 >

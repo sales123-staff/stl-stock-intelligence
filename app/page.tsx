@@ -1,10 +1,10 @@
 ﻿'use client'
 
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 /* ═══════════════════════════════════════════════════════════════════════════
    STL BUSINESS STOCK INTELLIGENCE
-   Copiloto de decisão para compras, estoque e caixa
+   Command Center de compra, estoque, vendas e caixa
    ═══════════════════════════════════════════════════════════════════════════ */
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────
@@ -12,6 +12,7 @@ import { useState, useMemo, useRef, useEffect } from 'react'
 type Classification = 'critico' | 'ruptura' | 'atencao' | 'saudavel' | 'excesso' | 'parado'
 type Tab = 'overview' | 'cash-leak' | 'revenue-risk' | 'import-ai' | 'not-buy' | 'simulation' | 'integrations'
 type Recommendation = 'comprar-urgente' | 'comprar' | 'manter' | 'pausar' | 'promover' | 'liquidar' | 'descontinuar'
+type Tone = 'emerald' | 'rose' | 'violet' | 'cyan' | 'amber' | 'zinc' | 'blue'
 
 interface SKU {
   codigo: string
@@ -53,6 +54,16 @@ interface AppParams {
   margemPadrao: number
 }
 
+interface DataSourceState {
+  stockSource: string
+  demandSource: string
+  lastProcessed: string
+  wooOrders?: number
+  wooSkus?: number
+  wooItems?: number
+  wooRevenue?: number
+}
+
 const DEFAULT_PARAMS: AppParams = {
   leadTimeDias: 60,
   periodoRelatorioDias: 90,
@@ -71,10 +82,6 @@ const CLASS_LABELS: Record<Classification, string> = {
   parado: 'Parado',
 }
 
-const CLASS_ORDER: Record<Classification, number> = {
-  critico: 0, ruptura: 1, parado: 2, excesso: 3, atencao: 4, saudavel: 5,
-}
-
 const REC_LABELS: Record<Recommendation, string> = {
   'comprar-urgente': 'Comprar urgente',
   comprar: 'Comprar',
@@ -85,19 +92,160 @@ const REC_LABELS: Record<Recommendation, string> = {
   descontinuar: 'Descontinuar',
 }
 
+const CLASS_TONES: Record<Classification, {
+  badge: string
+  dot: string
+  soft: string
+  border: string
+  text: string
+  accent: string
+}> = {
+  critico: {
+    badge: 'border-rose-200 bg-rose-50 text-rose-700 shadow-none',
+    dot: 'bg-rose-500',
+    soft: 'bg-rose-50',
+    border: 'border-rose-200',
+    text: 'text-rose-700',
+    accent: 'from-rose-50 via-white to-white',
+  },
+  ruptura: {
+    badge: 'border-orange-200 bg-orange-50 text-orange-700 shadow-none',
+    dot: 'bg-orange-500',
+    soft: 'bg-orange-50',
+    border: 'border-orange-200',
+    text: 'text-orange-700',
+    accent: 'from-orange-50 via-white to-white',
+  },
+  atencao: {
+    badge: 'border-amber-200 bg-amber-50 text-amber-700 shadow-none',
+    dot: 'bg-amber-500',
+    soft: 'bg-amber-50',
+    border: 'border-amber-200',
+    text: 'text-amber-700',
+    accent: 'from-amber-50 via-white to-white',
+  },
+  saudavel: {
+    badge: 'border-emerald-200 bg-emerald-50 text-emerald-700 shadow-none',
+    dot: 'bg-emerald-500',
+    soft: 'bg-emerald-50',
+    border: 'border-emerald-200',
+    text: 'text-emerald-700',
+    accent: 'from-emerald-50 via-white to-white',
+  },
+  excesso: {
+    badge: 'border-sky-200 bg-sky-50 text-sky-700 shadow-none',
+    dot: 'bg-sky-500',
+    soft: 'bg-sky-50',
+    border: 'border-sky-200',
+    text: 'text-sky-700',
+    accent: 'from-sky-50 via-white to-white',
+  },
+  parado: {
+    badge: 'border-violet-200 bg-violet-50 text-violet-700 shadow-none',
+    dot: 'bg-violet-500',
+    soft: 'bg-violet-50',
+    border: 'border-violet-200',
+    text: 'text-violet-700',
+    accent: 'from-violet-50 via-white to-white',
+  },
+}
+
+const REC_TONES: Record<Recommendation, string> = {
+  'comprar-urgente': 'border-rose-200 bg-rose-50 text-rose-700',
+  comprar: 'border-orange-200 bg-orange-50 text-orange-700',
+  manter: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  pausar: 'border-amber-200 bg-amber-50 text-amber-700',
+  promover: 'border-violet-200 bg-violet-50 text-violet-700',
+  liquidar: 'border-pink-200 bg-pink-50 text-pink-700',
+  descontinuar: 'border-slate-300 bg-slate-100 text-slate-700',
+}
+
+const TONE_STYLES: Record<Tone, {
+  text: string
+  border: string
+  bg: string
+  glow: string
+  icon: string
+  chip: string
+  gradient: string
+}> = {
+  emerald: {
+    text: 'text-emerald-700',
+    border: 'border-slate-200',
+    bg: 'bg-emerald-50',
+    glow: 'shadow-sm',
+    icon: 'bg-emerald-50 text-emerald-600 ring-1 ring-emerald-100',
+    chip: 'border-slate-200 bg-white text-slate-600',
+    gradient: 'from-emerald-50 via-white to-white',
+  },
+  rose: {
+    text: 'text-rose-700',
+    border: 'border-slate-200',
+    bg: 'bg-rose-50',
+    glow: 'shadow-sm',
+    icon: 'bg-rose-50 text-rose-600 ring-1 ring-rose-100',
+    chip: 'border-slate-200 bg-white text-slate-600',
+    gradient: 'from-rose-50 via-white to-white',
+  },
+  violet: {
+    text: 'text-violet-700',
+    border: 'border-slate-200',
+    bg: 'bg-violet-50',
+    glow: 'shadow-sm',
+    icon: 'bg-violet-50 text-violet-600 ring-1 ring-violet-100',
+    chip: 'border-slate-200 bg-white text-slate-600',
+    gradient: 'from-violet-50 via-white to-white',
+  },
+  cyan: {
+    text: 'text-sky-700',
+    border: 'border-slate-200',
+    bg: 'bg-sky-50',
+    glow: 'shadow-sm',
+    icon: 'bg-sky-50 text-sky-600 ring-1 ring-sky-100',
+    chip: 'border-slate-200 bg-white text-slate-600',
+    gradient: 'from-sky-50 via-white to-white',
+  },
+  amber: {
+    text: 'text-amber-700',
+    border: 'border-slate-200',
+    bg: 'bg-amber-50',
+    glow: 'shadow-sm',
+    icon: 'bg-amber-50 text-amber-600 ring-1 ring-amber-100',
+    chip: 'border-slate-200 bg-white text-slate-600',
+    gradient: 'from-amber-50 via-white to-white',
+  },
+  zinc: {
+    text: 'text-slate-900',
+    border: 'border-slate-200',
+    bg: 'bg-white',
+    glow: 'shadow-sm',
+    icon: 'bg-slate-100 text-slate-600 ring-1 ring-slate-200',
+    chip: 'border-slate-200 bg-white text-slate-600',
+    gradient: 'from-slate-50 via-white to-white',
+  },
+  blue: {
+    text: 'text-blue-700',
+    border: 'border-slate-200',
+    bg: 'bg-blue-50',
+    glow: 'shadow-sm',
+    icon: 'bg-blue-50 text-blue-600 ring-1 ring-blue-100',
+    chip: 'border-slate-200 bg-white text-slate-600',
+    gradient: 'from-blue-50 via-white to-white',
+  },
+}
+
 // ─── FORMATTING ────────────────────────────────────────────────────────────
 
+const cn = (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' ')
 const fmtNum = (n: number) => new Intl.NumberFormat('pt-BR').format(Math.round(n))
 const fmtBRL = (n: number) =>
-  new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(n)
-const fmtBRLcompact = (n: number) => {
-  if (Math.abs(n) >= 1_000_000) return `R$ ${(n / 1_000_000).toFixed(2)}M`
-  if (Math.abs(n) >= 1_000) return `R$ ${(n / 1_000).toFixed(1)}k`
-  return fmtBRL(n)
-}
+  new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(n || 0)
+const fmtBRLcompact = (n: number) =>
+  new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', notation: 'compact', maximumFractionDigits: 1 }).format(n || 0)
 const fmtDias = (n: number) => (!isFinite(n) ? '∞' : `${Math.round(n)}d`)
-const fmtPct = (n: number) => `${n.toFixed(1)}%`
+const fmtPct = (n: number) => `${(n || 0).toFixed(1)}%`
 const fmtDateTime = (d: string | Date) => new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(d))
+const fmtDate = (d: string | Date) => new Intl.DateTimeFormat('pt-BR', { dateStyle: 'medium' }).format(new Date(d))
 
 // ─── CSV PARSING ───────────────────────────────────────────────────────────
 
@@ -169,7 +317,7 @@ function buildMotivo(c: Classification, dias: number, valorEstoque: number, rece
   }
 }
 
-function processData(stockRaw: string, consumoRaw: string, mesesRaw: string, params: AppParams): SKU[] {
+function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, params: AppParams): SKU[] {
   const stockRows = parseCSV(stockRaw)
   const consumoRows = parseCSV(consumoRaw)
 
@@ -210,7 +358,7 @@ function processData(stockRaw: string, consumoRaw: string, mesesRaw: string, par
     const consumo = consumoData?.quantidade || 0
     const semEstoqueEncontrado = !stock
 
-    // ★ Regra de negócio: estoque < 5 trata como zero (devoluções pontuais)
+    // Regra de negócio: estoque < 5 trata como zero (devoluções pontuais)
     let estoqueUtilCalc = Math.max(0, qtdDisponivel - reservaVirtual)
     if (estoqueUtilCalc < 5) estoqueUtilCalc = 0
     const estoqueUtil = estoqueUtilCalc
@@ -226,23 +374,18 @@ function processData(stockRaw: string, consumoRaw: string, mesesRaw: string, par
 
     const classification = classify(estoqueUtil, diasCobertura, consumo, semEstoqueEncontrado)
 
-    // Sugestão de compra
     const estoqueNecessario = consumoDiario * (params.leadTimeDias + params.estoqueSegurancaDias)
     const sugestaoCompra = Math.max(0, Math.ceil(estoqueNecessario - estoqueUtil))
     const valorSugestaoCompra = sugestaoCompra * valorUnitario
 
-    // Receita em risco se romper
     const diasSemEstoqueProjetado = classification === 'critico' ? params.leadTimeDias :
       classification === 'ruptura' ? Math.max(0, params.leadTimeDias - diasCobertura) :
       classification === 'atencao' ? Math.max(0, params.leadTimeDias - diasCobertura) : 0
     const receitaEmRisco = consumoDiario * diasSemEstoqueProjetado * precoVenda
 
-    // Capital parado
     const capitalParado = (classification === 'parado' || classification === 'excesso') ? valorEstoque : 0
-
     const recommendation = recommend(classification, { giro, valorEstoque, consumo })
 
-    // Score de prioridade (0-100, maior = mais urgente)
     let scorePrioridade = 0
     if (classification === 'critico') scorePrioridade = 90 + Math.min(10, receitaEmRisco / 1000)
     else if (classification === 'ruptura') scorePrioridade = 70 + Math.min(20, receitaEmRisco / 1000)
@@ -268,7 +411,7 @@ function processData(stockRaw: string, consumoRaw: string, mesesRaw: string, par
 
 // ─── CSV EXPORT ────────────────────────────────────────────────────────────
 
-function exportCSV(rows: any[], filename: string) {
+function exportCSV(rows: Record<string, any>[], filename: string) {
   if (!rows.length) return
   const headers = Object.keys(rows[0])
   const csv = [
@@ -276,14 +419,15 @@ function exportCSV(rows: any[], filename: string) {
     ...rows.map(r => headers.map(h => {
       const v = r[h]
       if (typeof v === 'number') return Math.round(v * 100) / 100
-      return v
-    }).join(';'))
+      return String(v ?? '').replace(/;/g, ',').replace(/[\r\n]+/g, ' ')
+    }).join(';')),
   ].join('\n')
   const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
   a.download = filename
   a.click()
+  URL.revokeObjectURL(a.href)
 }
 
 function escapeCsvValue(value: any) {
@@ -292,7 +436,6 @@ function escapeCsvValue(value: any) {
     .replace(/[\r\n]+/g, ' ')
     .trim()
 }
-
 
 function buildConsumoCsvFromWoo(skuSummary: any[]) {
   const rows = skuSummary
@@ -452,9 +595,9 @@ PLASIL20;PLA Silk Preto e Dourado;12
 AMOSTRAS;AMOSTRAS;2`
 
 // ─── ICONS ─────────────────────────────────────────────────────────────────
-// Inline SVG icons (no external dependencies)
-const Icon = ({ name, className = 'w-4 h-4' }: { name: string; className?: string }) => {
-  const paths: Record<string, JSX.Element> = {
+
+const Icon = ({ name, className = 'h-4 w-4' }: { name: string; className?: string }) => {
+  const paths: Record<string, ReactNode> = {
     upload: <><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 7.5m0 0L7.5 12M12 7.5v9" /></>,
     chart: <><path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" /></>,
     alert: <><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" /></>,
@@ -465,7 +608,23 @@ const Icon = ({ name, className = 'w-4 h-4' }: { name: string; className?: strin
     download: <><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" /></>,
     bolt: <><path strokeLinecap="round" strokeLinejoin="round" d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z" /></>,
     target: <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><circle cx="12" cy="12" r="1.5" fill="currentColor" /></>,
+    database: <><path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 1.243-3.694 2.25-8.25 2.25s-8.25-1.007-8.25-2.25m16.5 0c0-1.243-3.694-2.25-8.25-2.25s-8.25 1.007-8.25 2.25m16.5 0v11.25c0 1.243-3.694 2.25-8.25 2.25s-8.25-1.007-8.25-2.25V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0c0 1.243-3.694 2.25-8.25 2.25s-8.25-1.007-8.25-2.25m16.5 0v3.75c0 1.243-3.694 2.25-8.25 2.25s-8.25-1.007-8.25-2.25v-3.75" /></>,
+    sparkles: <><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.456-2.456L14.25 6l1.035-.259a3.375 3.375 0 0 0 2.456-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" /></>,
+    check: <><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></>,
+    x: <><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></>,
+    store: <><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 21v-7.5A.75.75 0 0 1 14.25 12h3a.75.75 0 0 1 .75.75V21m-4.5 0H2.25m11.25 0H21m-18.75 0v-6.75A.75.75 0 0 1 3 13.5h7.5a.75.75 0 0 1 .75.75V21M3 3h18M4.5 3v3.75A2.25 2.25 0 0 0 6.75 9h10.5a2.25 2.25 0 0 0 2.25-2.25V3" /></>,
+    file: <><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-.988-2.387l-5.25-5.25A3.375 3.375 0 0 0 10.875 3H8.25A2.25 2.25 0 0 0 6 5.25v13.5A2.25 2.25 0 0 0 8.25 21h7.5A2.25 2.25 0 0 0 18 18.75m-6-15v4.5A2.25 2.25 0 0 0 14.25 10.5h4.5" /></>,
+    brain: <><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 3.055A9 9 0 1 0 20.945 14.19M9.813 3.055A9 9 0 0 1 20.945 14.19M9.813 3.055c.358.165.75.258 1.164.258 1.279 0 2.39-.88 2.69-2.086M20.945 14.19a2.777 2.777 0 0 1-2.69-2.086 2.777 2.777 0 0 0-2.69-2.086 2.777 2.777 0 0 0-2.69 2.086M8.25 9.75h.008v.008H8.25V9.75Zm3.75 5.25h.008v.008H12V15Zm3-8.25h.008v.008H15V6.75Z" /></>,
+    clock: <><path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></>,
+    shield: <><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.75c0 5.592 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.75h-.152c-3.196 0-6.1-1.25-8.25-3.286Z" /></>,
+    package: <><path strokeLinecap="round" strokeLinejoin="round" d="m21 7.5-9-5.25L3 7.5m18 0-9 5.25m9-5.25v9l-9 5.25m0-9L3 7.5m9 5.25v9M3 7.5v9l9 5.25" /></>,
+    arrowRight: <><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" /></>,
+    refresh: <><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></>,
+    plug: <><path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H18m-4.5 0V3.75M18 6V3.75m0 2.25v4.5a6 6 0 0 1-12 0V6m0 0V3.75M6 6H3.75M6 6h7.5m-1.5 9.75V21" /></>,
+    command: <><path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5h10.5m-10.5 9h10.5M4.5 12h15" /></>,
+    layers: <><path strokeLinecap="round" strokeLinejoin="round" d="m6.429 9.75 5.571 3 5.571-3M3.75 7.5 12 3l8.25 4.5L12 12 3.75 7.5Zm0 6 8.25 4.5 8.25-4.5" /></>,
   }
+
   return (
     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}>
       {paths[name]}
@@ -475,61 +634,236 @@ const Icon = ({ name, className = 'w-4 h-4' }: { name: string; className?: strin
 
 // ─── COMPONENTS ────────────────────────────────────────────────────────────
 
+function GlassPanel({ children, className = '' }: { children: ReactNode; className?: string }) {
+  return (
+    <div className={cn('rounded-xl border border-slate-200 bg-white shadow-sm', className)}>
+      {children}
+    </div>
+  )
+}
+
+function StatusPill({ label, tone = 'emerald', pulse = false }: { label: string; tone?: Tone; pulse?: boolean }) {
+  const dot = tone === 'emerald' ? 'bg-emerald-500' : tone === 'rose' ? 'bg-rose-500' : tone === 'violet' ? 'bg-violet-500' : tone === 'cyan' ? 'bg-sky-500' : tone === 'amber' ? 'bg-amber-500' : tone === 'blue' ? 'bg-blue-500' : 'bg-slate-400'
+  return (
+    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600 shadow-sm">
+      <span className={cn('h-1.5 w-1.5 rounded-full', dot, pulse && 'animate-pulse')} />
+      {label}
+    </span>
+  )
+}
+
 function ClassBadge({ c }: { c: Classification }) {
-  const styles: Record<Classification, string> = {
-    critico: 'bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30',
-    ruptura: 'bg-orange-500/15 text-orange-300 ring-1 ring-orange-500/30',
-    atencao: 'bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30',
-    saudavel: 'bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30',
-    excesso: 'bg-blue-500/15 text-blue-300 ring-1 ring-blue-500/30',
-    parado: 'bg-violet-500/15 text-violet-300 ring-1 ring-violet-500/30',
-  }
-  return <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-medium ${styles[c]}`}>{CLASS_LABELS[c]}</span>
+  return (
+    <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold', CLASS_TONES[c].badge)}>
+      <span className={cn('h-1.5 w-1.5 rounded-full', CLASS_TONES[c].dot)} />
+      {CLASS_LABELS[c]}
+    </span>
+  )
 }
 
 function RecBadge({ r }: { r: Recommendation }) {
-  const styles: Record<Recommendation, string> = {
-    'comprar-urgente': 'bg-rose-500 text-white',
-    comprar: 'bg-orange-500/90 text-white',
-    manter: 'bg-emerald-500/20 text-emerald-200 ring-1 ring-emerald-500/30',
-    pausar: 'bg-amber-500/20 text-amber-200 ring-1 ring-amber-500/30',
-    promover: 'bg-violet-500/20 text-violet-200 ring-1 ring-violet-500/30',
-    liquidar: 'bg-pink-500/20 text-pink-200 ring-1 ring-pink-500/30',
-    descontinuar: 'bg-zinc-700 text-zinc-300 ring-1 ring-zinc-600',
-  }
-  return <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-medium whitespace-nowrap ${styles[r]}`}>{REC_LABELS[r]}</span>
+  return <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold whitespace-nowrap', REC_TONES[r])}>{REC_LABELS[r]}</span>
 }
 
 function KpiCard({
-  label, value, sub, icon, accent = 'default', big = false,
+  label, value, sub, icon, tone = 'zinc', action, emphasis = false,
 }: {
-  label: string; value: string | number; sub?: string; icon?: string
-  accent?: 'default' | 'danger' | 'warning' | 'success' | 'violet' | 'info'; big?: boolean
+  label: string
+  value: string | number
+  sub?: string
+  icon?: string
+  tone?: Tone
+  action?: string
+  emphasis?: boolean
 }) {
-  const accentMap = {
-    default: 'text-zinc-100', danger: 'text-rose-400', warning: 'text-amber-400',
-    success: 'text-emerald-400', violet: 'text-violet-400', info: 'text-blue-400',
-  }
-  const iconBg = {
-    default: 'bg-zinc-800 text-zinc-400', danger: 'bg-rose-500/10 text-rose-400',
-    warning: 'bg-amber-500/10 text-amber-400', success: 'bg-emerald-500/10 text-emerald-400',
-    violet: 'bg-violet-500/10 text-violet-400', info: 'bg-blue-500/10 text-blue-400',
-  }
+  const styles = TONE_STYLES[tone]
   return (
-    <div className={`rounded-xl border border-zinc-800 bg-zinc-900/50 ${big ? 'p-6' : 'p-5'}`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-zinc-500">{label}</p>
-          <p className={`mt-2 ${big ? 'text-3xl' : 'text-2xl'} font-semibold leading-none ${accentMap[accent]}`}>{value}</p>
-          {sub && <p className="mt-2 text-[11px] text-zinc-500">{sub}</p>}
-        </div>
-        {icon && (
-          <div className={`flex h-9 w-9 items-center justify-center rounded-lg ${iconBg[accent]} shrink-0`}>
-            <Icon name={icon} className="w-4 h-4" />
+    <div className={cn(
+      'group rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-md',
+      emphasis ? 'min-h-[154px]' : 'min-h-[136px]',
+    )}>
+      <div className="flex h-full flex-col justify-between gap-6">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">{label}</p>
+            <p className={cn('mt-4 font-bold tracking-tight', emphasis ? 'text-4xl sm:text-5xl' : 'text-3xl', styles.text)}>{value}</p>
           </div>
-        )}
+          {icon && (
+            <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-lg', styles.icon)}>
+              <Icon name={icon} className="h-5 w-5" />
+            </div>
+          )}
+        </div>
+        <div>
+          {sub && <p className="text-sm leading-5 text-slate-500">{sub}</p>}
+          {action && <p className={cn('mt-3 text-xs font-semibold', styles.text)}>{action}</p>}
+        </div>
       </div>
     </div>
+  )
+}
+
+function SectionTitle({ eyebrow, title, subtitle, right }: { eyebrow?: string; title: string; subtitle?: string; right?: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-4">
+      <div>
+        {eyebrow && <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{eyebrow}</p>}
+        <h2 className="mt-2 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">{title}</h2>
+        {subtitle && <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">{subtitle}</p>}
+      </div>
+      {right}
+    </div>
+  )
+}
+
+function EmptyState({ title, subtitle, icon = 'package' }: { title: string; subtitle: string; icon?: string }) {
+  return (
+    <GlassPanel className="p-10 text-center">
+      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg bg-slate-100 text-slate-500 ring-1 ring-slate-200">
+        <Icon name={icon} className="h-5 w-5" />
+      </div>
+      <p className="mt-4 text-sm font-semibold text-slate-900">{title}</p>
+      <p className="mt-1 text-sm text-slate-500">{subtitle}</p>
+    </GlassPanel>
+  )
+}
+
+function DataSourceCard({ icon, title, status, detail, tone = 'zinc' }: { icon: string; title: string; status: string; detail: string; tone?: Tone }) {
+  const styles = TONE_STYLES[tone]
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex items-start gap-4">
+        <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-lg', styles.icon)}>
+          <Icon name={icon} className="h-5 w-5" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-900">{title}</p>
+          <p className={cn('mt-1 text-xs font-semibold', styles.text)}>{status}</p>
+          <p className="mt-2 text-xs leading-5 text-slate-500">{detail}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DecisionCard({ sku, rank }: { sku: SKU; rank: number }) {
+  const scoreTone = sku.scorePrioridade >= 70 ? 'text-rose-700' : sku.scorePrioridade >= 40 ? 'text-amber-700' : 'text-emerald-700'
+  return (
+    <div className="border-b border-slate-100 p-4 transition last:border-b-0 hover:bg-slate-50">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
+        <div className="flex min-w-0 items-center gap-4 lg:w-[34%]">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-sm font-bold text-slate-700">
+            #{rank}
+          </div>
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold text-slate-950">{sku.produto}</h3>
+            <p className="mt-1 font-mono text-[11px] text-slate-400">{sku.codigo}</p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 lg:w-[24%]">
+          <ClassBadge c={sku.classification} />
+          <RecBadge r={sku.recommendation} />
+        </div>
+
+        <div className="grid grid-cols-3 gap-4 lg:flex-1">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Receita em risco</p>
+            <p className="mt-1 text-sm font-bold text-rose-700">{fmtBRLcompact(sku.receitaEmRisco)}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Comprar</p>
+            <p className="mt-1 text-sm font-bold text-emerald-700">{fmtNum(sku.sugestaoCompra)} un</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Score</p>
+            <p className={cn('mt-1 text-sm font-bold', scoreTone)}>{sku.scorePrioridade}</p>
+          </div>
+        </div>
+      </div>
+      <p className="mt-3 text-xs leading-5 text-slate-500 lg:ml-14">{sku.motivo}</p>
+    </div>
+  )
+}
+
+function SkuCompactRow({ sku, index, right }: { sku: SKU; index?: number; right?: ReactNode }) {
+  return (
+    <div className="group flex items-center gap-4 border-b border-slate-100 px-4 py-4 transition hover:bg-slate-50 sm:px-5">
+      {typeof index === 'number' && (
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-xs font-bold text-slate-600">
+          {index + 1}
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <ClassBadge c={sku.classification} />
+          <span className="font-mono text-[10px] text-slate-400">{sku.codigo}</span>
+        </div>
+        <p className="mt-1 truncate text-sm font-semibold text-slate-900">{sku.produto}</p>
+        <p className="mt-0.5 line-clamp-1 text-xs text-slate-500">{sku.motivo}</p>
+      </div>
+      {right}
+    </div>
+  )
+}
+
+function SliderControl({ label, value, min, max, step = 1, suffix, onChange }: {
+  label: string
+  value: number
+  min: number
+  max: number
+  step?: number
+  suffix?: string
+  onChange: (value: number) => void
+}) {
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <label className="text-sm font-medium text-slate-700">{label}</label>
+        <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-700">
+          {suffix ? `${fmtNum(value)}${suffix}` : fmtNum(value)}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={e => onChange(Number(e.target.value))}
+        className="h-2 w-full cursor-pointer appearance-none rounded-full bg-slate-200 accent-slate-900"
+      />
+    </div>
+  )
+}
+
+function IntegrationCard({
+  title, status, description, icon, tone, children,
+}: {
+  title: string
+  status: string
+  description: string
+  icon: string
+  tone: Tone
+  children?: ReactNode
+}) {
+  const styles = TONE_STYLES[tone]
+  return (
+    <GlassPanel className="p-6">
+      <div>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
+            <p className={cn('mt-1 text-xs font-semibold uppercase tracking-[0.14em]', styles.text)}>{status}</p>
+          </div>
+          <div className={cn('flex h-11 w-11 items-center justify-center rounded-lg', styles.icon)}>
+            <Icon name={icon} className="h-5 w-5" />
+          </div>
+        </div>
+        <p className="mt-5 text-sm leading-6 text-slate-500">{description}</p>
+        {children && <div className="mt-5">{children}</div>}
+      </div>
+    </GlassPanel>
   )
 }
 
@@ -543,33 +877,25 @@ export default function Page() {
   const [showImport, setShowImport] = useState(true)
 
   const [stockRaw, setStockRaw] = useState('')
-  const [consumoRaw, setConsumoRaw] = useState('')
-  const [mesesRaw, setMesesRaw] = useState('')
   const [uploadedFiles, setUploadedFiles] = useState<{ name: string; type: string; rows: number }[]>([])
   const [error, setError] = useState('')
+  const [processSuccess, setProcessSuccess] = useState('')
   const [processLoading, setProcessLoading] = useState(false)
-  const [dataSource, setDataSource] = useState<{
-    stockSource: string
-    demandSource: string
-    lastProcessed: string
-    wooOrders?: number
-    wooSkus?: number
-    wooItems?: number
-    wooRevenue?: number
-  }>({ stockSource: 'Demo interna', demandSource: 'Demo interna', lastProcessed: '' })
+  const [dragActive, setDragActive] = useState(false)
+  const [dataSource, setDataSource] = useState<DataSourceState>({ stockSource: 'Demo interna', demandSource: 'Demo interna', lastProcessed: '' })
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const [search, setSearch] = useState('')
-  const [classFilter, setClassFilter] = useState<Classification | 'all'>('all')
-
   const [sim, setSim] = useState<SimParams>({
-    leadTimeDias: 60, estoqueSegurancaDias: 15, orcamentoCompra: 999999999, metaReducaoParado: 30,
+    leadTimeDias: 60,
+    estoqueSegurancaDias: 15,
+    orcamentoCompra: 999999999,
+    metaReducaoParado: 30,
   })
 
   const [wcLoading, setWcLoading] = useState(false)
   const [wcResult, setWcResult] = useState<any>(null)
   const [wcError, setWcError] = useState('')
-  const [sancoStatus, setSancoStatus] = useState('Integração preparada. Aguardando credenciais e endpoint final da Escalasoft.')
+  const [sancoStatus, setSancoStatus] = useState('CSV SANCO ativo no MVP. A próxima fase é substituir upload manual por API oficial da SANCO/Escalasoft.')
 
   const [aiOpen, setAiOpen] = useState(false)
   const [aiQuestion, setAiQuestion] = useState('')
@@ -577,7 +903,6 @@ export default function Page() {
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState('')
 
-  // Auto-load mock on mount
   useEffect(() => {
     const result = processData(MOCK_STOCK, MOCK_CONSUMO, '', DEFAULT_PARAMS)
     setData(result)
@@ -590,13 +915,16 @@ export default function Page() {
     })
   }, [])
 
-  // ─── Summary ───
   const summary = useMemo(() => {
     if (!data.length) return null
     const valorTotal = data.reduce((a, d) => a + d.valorEstoque, 0)
     const capitalParado = data.reduce((a, d) => a + d.capitalParado, 0)
     const receitaEmRisco = data.reduce((a, d) => a + d.receitaEmRisco, 0)
     const sugestaoTotal = data.reduce((a, d) => a + d.valorSugestaoCompra, 0)
+    const unidadesVendidas = data.reduce((a, d) => a + d.consumo, 0)
+    const compraRecomendadaUn = data.reduce((a, d) => a + d.sugestaoCompra, 0)
+    const skusComDemanda = data.filter(d => d.consumo > 0).length
+    const caixaLiberavel = capitalParado * 0.6
     return {
       totalSkus: data.length,
       criticos: data.filter(d => d.classification === 'critico').length,
@@ -605,21 +933,105 @@ export default function Page() {
       saudavel: data.filter(d => d.classification === 'saudavel').length,
       excesso: data.filter(d => d.classification === 'excesso').length,
       parado: data.filter(d => d.classification === 'parado').length,
-      valorTotal, capitalParado, receitaEmRisco, sugestaoTotal,
+      valorTotal,
+      capitalParado,
+      receitaEmRisco,
+      sugestaoTotal,
+      unidadesVendidas,
+      compraRecomendadaUn,
+      skusComDemanda,
+      caixaLiberavel,
       pctParado: valorTotal > 0 ? (capitalParado / valorTotal) * 100 : 0,
-      oportunidadeFinanceira: capitalParado * 0.6 + receitaEmRisco,
+      oportunidadeFinanceira: caixaLiberavel + receitaEmRisco,
     }
   }, [data])
 
-  // ─── Top decisões ───
   const topDecisions = useMemo(() => {
     if (!data.length) return []
     return [...data].sort((a, b) => b.scorePrioridade - a.scorePrioridade).slice(0, 5)
   }, [data])
 
-  // ─── File handling ───
+  const cashLeakData = useMemo(() => {
+    return [...data]
+      .filter(d => d.classification === 'parado' || d.classification === 'excesso')
+      .sort((a, b) => b.valorEstoque - a.valorEstoque)
+  }, [data])
+
+  const revenueRiskData = useMemo(() => {
+    return [...data]
+      .filter(d => d.classification === 'critico' || d.classification === 'ruptura' || d.classification === 'atencao')
+      .sort((a, b) => b.receitaEmRisco - a.receitaEmRisco)
+  }, [data])
+
+  const importOrderData = useMemo(() => {
+    return [...data]
+      .filter(d => d.sugestaoCompra > 0)
+      .sort((a, b) => b.scorePrioridade - a.scorePrioridade)
+  }, [data])
+
+  const notBuyData = useMemo(() => {
+    return [...data]
+      .filter(d => ['pausar', 'liquidar', 'descontinuar', 'promover'].includes(d.recommendation))
+      .sort((a, b) => b.valorEstoque - a.valorEstoque)
+  }, [data])
+
+  const simulation = useMemo(() => {
+    const customData = data.map(d => {
+      const estoqueNec = d.consumoDiario * (sim.leadTimeDias + sim.estoqueSegurancaDias)
+      const sug = Math.max(0, Math.ceil(estoqueNec - d.estoqueUtil))
+      return { ...d, sugestaoCompra: sug, valorSugestaoCompra: sug * d.valorUnitario }
+    })
+
+    const sorted = [...customData].sort((a, b) => b.scorePrioridade - a.scorePrioridade)
+    let orcamentoUsado = 0
+    const compradosDentroOrcamento: SKU[] = []
+    const evitados: SKU[] = []
+
+    for (const d of sorted) {
+      if (d.valorSugestaoCompra <= 0) continue
+      if (orcamentoUsado + d.valorSugestaoCompra <= sim.orcamentoCompra) {
+        compradosDentroOrcamento.push(d)
+        orcamentoUsado += d.valorSugestaoCompra
+      } else {
+        evitados.push(d)
+      }
+    }
+
+    const compraObrigatoria = customData
+      .filter(d => d.classification === 'critico' && d.sugestaoCompra > 0)
+      .sort((a, b) => b.receitaEmRisco - a.receitaEmRisco)
+
+    const criticosForaOrcamento = evitados
+      .filter(d => d.classification === 'critico')
+      .sort((a, b) => b.receitaEmRisco - a.receitaEmRisco)
+
+    const naoComprar = customData.filter(d => ['pausar', 'liquidar', 'descontinuar'].includes(d.recommendation))
+    const valorEvitarRecompra = naoComprar.reduce((a, d) => a + (d.consumoDiario * sim.leadTimeDias * d.valorUnitario), 0)
+
+    const capitalParado = customData.reduce((a, d) => a + d.capitalParado, 0)
+    const reducaoEstimada = capitalParado * (sim.metaReducaoParado / 100)
+    const caixaLiberado = reducaoEstimada * 0.6
+    const riscoRupturaResidual = evitados.reduce((a, d) => a + d.receitaEmRisco, 0)
+    const saldoCaixa = caixaLiberado + valorEvitarRecompra - orcamentoUsado
+
+    return {
+      orcamentoUsado,
+      compradosDentroOrcamento,
+      evitados,
+      criticosForaOrcamento,
+      compraObrigatoria,
+      naoComprar,
+      valorEvitarRecompra,
+      caixaLiberado,
+      riscoRupturaResidual,
+      saldoCaixa,
+      totalCompras: compradosDentroOrcamento.length,
+    }
+  }, [data, sim])
+
   function handleFiles(files: FileList) {
     setError('')
+    setProcessSuccess('')
 
     const file = Array.from(files)[0]
     if (!file) return
@@ -640,16 +1052,16 @@ export default function Page() {
       }
 
       setStockRaw(text)
-      setConsumoRaw('')
-      setMesesRaw('')
       setUploadedFiles([{ name: file.name, type: 'stock', rows }])
       setDataSource(prev => ({ ...prev, stockSource: `CSV SANCO · ${file.name}` }))
+      setProcessSuccess(`Arquivo carregado: ${file.name} · ${fmtNum(rows)} linhas de estoque atual.`)
     }
     reader.readAsText(file, 'UTF-8')
   }
 
   async function handleProcess() {
     setError('')
+    setProcessSuccess('')
     setProcessLoading(true)
 
     try {
@@ -676,8 +1088,6 @@ export default function Page() {
       const periodoDias = Number(params.periodoRelatorioDias || 90)
       const paramsComWoo = { ...params, periodoRelatorioDias: periodoDias }
 
-      setConsumoRaw(wooConsumoCsv)
-      setMesesRaw('')
       setParams(paramsComWoo)
 
       const result = processData(stockRaw, wooConsumoCsv, '', paramsComWoo)
@@ -695,6 +1105,7 @@ export default function Page() {
         wooItems: wooData.totalItems ?? 0,
         wooRevenue: wooData.totalRevenue ?? 0,
       })
+      setProcessSuccess('Dados processados: estoque SANCO + pedidos WooCommerce.')
     } catch (error: any) {
       setError(error?.message || 'Erro ao processar estoque SANCO com pedidos WooCommerce.')
     } finally {
@@ -708,6 +1119,8 @@ export default function Page() {
     setHasData(true)
     setShowImport(false)
     setTab('overview')
+    setError('')
+    setProcessSuccess('Demo interna carregada para navegação do MVP.')
     setDataSource({
       stockSource: 'Demo interna',
       demandSource: 'Demo interna',
@@ -768,93 +1181,6 @@ export default function Page() {
     }
   }
 
-
-  // ─── Filtered data ───
-  const filteredData = useMemo(() => {
-    let r = [...data]
-    if (classFilter !== 'all') r = r.filter(d => d.classification === classFilter)
-    if (search) {
-      const q = search.toLowerCase()
-      r = r.filter(d => d.codigo.toLowerCase().includes(q) || d.produto.toLowerCase().includes(q))
-    }
-    return r.sort((a, b) => b.scorePrioridade - a.scorePrioridade)
-  }, [data, search, classFilter])
-
-  // ─── Cash leak data ───
-  const cashLeakData = useMemo(() => {
-    return [...data]
-      .filter(d => d.classification === 'parado' || d.classification === 'excesso')
-      .sort((a, b) => b.valorEstoque - a.valorEstoque)
-  }, [data])
-
-  // ─── Revenue at risk data ───
-  const revenueRiskData = useMemo(() => {
-    return [...data]
-      .filter(d => d.classification === 'critico' || d.classification === 'ruptura' || d.classification === 'atencao')
-      .sort((a, b) => b.receitaEmRisco - a.receitaEmRisco)
-  }, [data])
-
-  // ─── Import order data ───
-  const importOrderData = useMemo(() => {
-    return [...data]
-      .filter(d => d.sugestaoCompra > 0)
-      .sort((a, b) => b.scorePrioridade - a.scorePrioridade)
-  }, [data])
-
-  // ─── Not buy data ───
-  const notBuyData = useMemo(() => {
-    return [...data]
-      .filter(d => ['pausar', 'liquidar', 'descontinuar', 'promover'].includes(d.recommendation))
-      .sort((a, b) => b.valorEstoque - a.valorEstoque)
-  }, [data])
-
-  // ─── Simulation ───
-  const simulation = useMemo(() => {
-    const customData = data.map(d => {
-      const estoqueNec = d.consumoDiario * (sim.leadTimeDias + sim.estoqueSegurancaDias)
-      const sug = Math.max(0, Math.ceil(estoqueNec - d.estoqueUtil))
-      return { ...d, sugestaoCompra: sug, valorSugestaoCompra: sug * d.valorUnitario }
-    })
-
-    const sorted = [...customData].sort((a, b) => b.scorePrioridade - a.scorePrioridade)
-    let orcamentoUsado = 0
-    const compradosDentroOrcamento: SKU[] = []
-    const evitados: SKU[] = []
-
-    for (const d of sorted) {
-      if (d.valorSugestaoCompra <= 0) continue
-      if (orcamentoUsado + d.valorSugestaoCompra <= sim.orcamentoCompra) {
-        compradosDentroOrcamento.push(d)
-        orcamentoUsado += d.valorSugestaoCompra
-      } else {
-        evitados.push(d)
-      }
-    }
-
-    const compraObrigatoria = customData
-      .filter(d => d.classification === 'critico' && d.sugestaoCompra > 0)
-      .sort((a, b) => b.receitaEmRisco - a.receitaEmRisco)
-
-    const criticosForaOrcamento = evitados
-      .filter(d => d.classification === 'critico')
-      .sort((a, b) => b.receitaEmRisco - a.receitaEmRisco)
-
-    const naoComprar = customData.filter(d => ['pausar', 'liquidar', 'descontinuar'].includes(d.recommendation))
-    const valorEvitarRecompra = naoComprar.reduce((a, d) => a + (d.consumoDiario * sim.leadTimeDias * d.valorUnitario), 0)
-
-    const capitalParado = customData.reduce((a, d) => a + d.capitalParado, 0)
-    const reducaoEstimada = capitalParado * (sim.metaReducaoParado / 100)
-    const caixaLiberado = reducaoEstimada * 0.6
-
-    const riscoRupturaResidual = evitados.reduce((a, d) => a + d.receitaEmRisco, 0)
-
-    return {
-      orcamentoUsado, compradosDentroOrcamento, evitados, criticosForaOrcamento,
-      compraObrigatoria, naoComprar, valorEvitarRecompra, caixaLiberado,
-      riscoRupturaResidual, totalCompras: compradosDentroOrcamento.length,
-    }
-  }, [data, sim])
-
   async function askAI(customQuestion?: string) {
     const questionToSend = (customQuestion || aiQuestion).trim()
     if (!questionToSend) return
@@ -867,12 +1193,15 @@ export default function Page() {
     try {
       const context = {
         summary,
+        fontes: dataSource,
         parametros: params,
         simulacao: {
           leadTimeDias: sim.leadTimeDias,
           estoqueSegurancaDias: sim.estoqueSegurancaDias,
           orcamentoCompra: sim.orcamentoCompra >= 999000000 ? 'ilimitado' : sim.orcamentoCompra,
           metaReducaoParado: sim.metaReducaoParado,
+          riscoRupturaResidual: simulation.riscoRupturaResidual,
+          caixaLiberado: simulation.caixaLiberado,
         },
         skus: data.slice(0, 150).map((d) => ({
           codigo: d.codigo,
@@ -914,65 +1243,86 @@ export default function Page() {
     }
   }
 
-  // ─── Tabs config ───
   const tabs: { id: Tab; label: string; icon: string; badge?: number }[] = [
-    { id: 'overview', label: 'Executive overview', icon: 'chart' },
-    { id: 'cash-leak', label: 'Cash leak detector', icon: 'cash', badge: summary?.parado },
-    { id: 'revenue-risk', label: 'Revenue at risk', icon: 'alert', badge: summary ? summary.criticos + summary.ruptura : 0 },
-    { id: 'import-ai', label: 'Import order AI', icon: 'truck' },
-    { id: 'not-buy', label: 'What not to buy', icon: 'block' },
-    { id: 'simulation', label: 'Business simulation', icon: 'sliders' },
-    { id: 'integrations', label: 'Integrações', icon: 'target' },
+    { id: 'overview', label: 'Visão geral', icon: 'chart' },
+    { id: 'cash-leak', label: 'Caixa parado', icon: 'cash', badge: summary ? summary.parado + summary.excesso : 0 },
+    { id: 'revenue-risk', label: 'Risco de ruptura', icon: 'alert', badge: summary ? summary.criticos + summary.ruptura : 0 },
+    { id: 'import-ai', label: 'Pedido recomendado', icon: 'truck', badge: importOrderData.length },
+    { id: 'not-buy', label: 'Não recomprar', icon: 'block', badge: notBuyData.length },
+    { id: 'simulation', label: 'Simulação', icon: 'sliders' },
+    { id: 'integrations', label: 'Integrações', icon: 'plug' },
   ]
 
-  return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100" style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif' }}>
+  const heroDecision = topDecisions[0]
+  const estoqueSourceLabel = dataSource.stockSource || 'Aguardando CSV SANCO'
+  const demandSourceLabel = dataSource.demandSource || 'WooCommerce últimos 90 dias'
 
-      {/* ── HEADER ── */}
-      <header className="sticky top-0 z-30 border-b border-zinc-800 bg-zinc-950/85 backdrop-blur-md">
-        <div className="mx-auto max-w-screen-2xl px-6 lg:px-8">
-          <div className="flex h-14 items-center justify-between">
+  return (
+    <div
+      className="relative isolate min-h-screen overflow-hidden bg-[#F8FAFC] text-slate-900"
+      style={{ fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif' }}
+    >
+      <div className="pointer-events-none fixed inset-x-0 top-0 -z-10 h-40 bg-white/70" />
+
+      {/* HEADER */}
+      <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur-md">
+        <div className="mx-auto max-w-screen-2xl px-4 sm:px-6 lg:px-8">
+          <div className="flex min-h-[72px] flex-wrap items-center justify-between gap-4 py-3">
             <div className="flex items-center gap-3">
-              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-emerald-400 to-teal-600">
-                <Icon name="bolt" className="w-3.5 h-3.5 text-zinc-900" />
+              <div className="relative flex h-11 w-11 items-center justify-center rounded-xl bg-slate-900 text-white shadow-sm">
+                <Icon name="bolt" className="relative h-5 w-5" />
               </div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-[15px] font-semibold tracking-tight">STL Business Stock Intelligence</span>
-                <span className="hidden sm:inline rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">MVP</span>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-base font-semibold tracking-tight text-slate-900">STL Business Stock Intelligence</p>
+                  <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-600">
+                    MVP Hackathon
+                  </span>
+                </div>
+                <p className="mt-1 hidden text-xs text-slate-500 sm:block">Compra, estoque, vendas e caixa em um command center operacional.</p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="hidden md:flex items-center gap-2 text-[11px] text-zinc-500">
-                <span className="flex h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
-                Conectado · WooCommerce + SANCO
-                <span className="text-zinc-700">·</span>
-                <span className="text-zinc-500">CSV SANCO + Woo 90d</span>
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="hidden items-center gap-2 xl:flex">
+                <StatusPill label="WooCommerce conectado" tone="emerald" pulse />
+                <StatusPill label="SANCO CSV" tone="cyan" />
+                <StatusPill label="IA operacional" tone="violet" />
               </div>
               <button
-                onClick={() => setShowImport(true)}
-                className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-zinc-600 hover:bg-zinc-800"
+                onClick={() => setAiOpen(true)}
+                className="hidden items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 sm:flex"
               >
-                <Icon name="upload" className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Importar dados</span>
+                <Icon name="sparkles" className="h-4 w-4" />
+                Copiloto IA
+              </button>
+              <button
+                onClick={() => setShowImport(v => !v)}
+                className="inline-flex items-center gap-2 rounded-full border border-slate-900 bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-800"
+              >
+                <Icon name="upload" className="h-4 w-4" />
+                Importar dados
               </button>
             </div>
           </div>
 
-          {/* Tabs */}
           {hasData && (
-            <nav className="flex gap-1 overflow-x-auto pb-0">
+            <nav className="flex gap-2 overflow-x-auto pb-3">
               {tabs.map(t => (
                 <button
                   key={t.id}
                   onClick={() => setTab(t.id)}
-                  className={`relative flex items-center gap-2 whitespace-nowrap px-3 py-2.5 text-[13px] font-medium transition-colors ${
-                    tab === t.id ? 'text-emerald-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-px after:bg-emerald-400' : 'text-zinc-500 hover:text-zinc-300'
-                  }`}
+                  className={cn(
+                    'group inline-flex items-center gap-2 whitespace-nowrap rounded-full border px-4 py-2 text-xs font-bold transition',
+                    tab === t.id
+                      ? 'border-slate-900 bg-slate-900 text-white shadow-sm'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900',
+                  )}
                 >
-                  <Icon name={t.icon} className="w-3.5 h-3.5" />
+                  <Icon name={t.icon} className="h-3.5 w-3.5" />
                   {t.label}
                   {!!t.badge && t.badge > 0 && (
-                    <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${tab === t.id ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                    <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-black', tab === t.id ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600')}>
                       {t.badge}
                     </span>
                   )}
@@ -983,394 +1333,479 @@ export default function Page() {
         </div>
       </header>
 
-      {/* ── IMPORT DRAWER ── */}
+      {/* IMPORT PANEL */}
       {showImport && (
-        <div className="border-b border-zinc-800 bg-zinc-900/40">
-          <div className="mx-auto max-w-screen-2xl px-6 lg:px-8 py-6">
-            <div className="grid gap-6 lg:grid-cols-3">
-              <div
-                onDrop={e => { e.preventDefault(); handleFiles(e.dataTransfer.files) }}
-                onDragOver={e => e.preventDefault()}
-                onClick={() => inputRef.current?.click()}
-                className="lg:col-span-2 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/30 p-8 transition hover:border-emerald-500/50 hover:bg-zinc-900/50"
-              >
-                <Icon name="upload" className="w-8 h-8 text-zinc-500" />
-                <p className="text-sm font-medium">Arraste o CSV de estoque SANCO ou clique para selecionar</p>
-                <p className="text-[11px] text-zinc-500">Importe apenas o CSV de estoque atual da SANCO. A demanda vem automaticamente do WooCommerce dos últimos 3 meses.</p>
-                <input ref={inputRef} type="file" multiple accept=".csv" className="hidden" onChange={e => e.target.files && handleFiles(e.target.files)} />
-                {uploadedFiles.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-2 justify-center">
-                    {uploadedFiles.map(f => (
-                      <span key={f.type} className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300">
-                        {f.name} · {f.rows} linhas
-                      </span>
-                    ))}
+        <section className="border-b border-slate-200 bg-white/70 backdrop-blur-md">
+          <div className="mx-auto max-w-screen-2xl px-4 py-6 sm:px-6 lg:px-8">
+            <div className="grid gap-5 lg:grid-cols-[1.35fr_0.85fr]">
+              <GlassPanel className="overflow-hidden p-1">
+                <div
+                  onDrop={e => { e.preventDefault(); setDragActive(false); handleFiles(e.dataTransfer.files) }}
+                  onDragOver={e => { e.preventDefault(); setDragActive(true) }}
+                  onDragLeave={() => setDragActive(false)}
+                  onClick={() => inputRef.current?.click()}
+                  className={cn(
+                    'group relative flex min-h-[290px] cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed p-8 text-center transition',
+                    dragActive ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-slate-50 hover:border-emerald-200 hover:bg-emerald-50',
+                  )}
+                >
+                  <div className="absolute inset-x-0 top-0 h-1 bg-slate-200" />
+                  <div className="relative flex h-16 w-16 items-center justify-center rounded-xl border border-emerald-100 bg-emerald-50 text-emerald-700 shadow-sm transition group-hover:scale-105">
+                    <Icon name="upload" className="h-7 w-7" />
                   </div>
-                )}
-              </div>
+                  <div className="relative mt-5 max-w-xl">
+                    <p className="text-lg font-semibold text-slate-900">Arraste o CSV de estoque SANCO ou clique para importar</p>
+                    <p className="mt-2 text-sm leading-6 text-slate-500">
+                      O estoque atual vem do CSV SANCO. A demanda continua vindo automaticamente do WooCommerce, considerando pedidos válidos do período configurado.
+                    </p>
+                  </div>
+                  <input ref={inputRef} type="file" accept=".csv" className="hidden" onChange={e => e.target.files && handleFiles(e.target.files)} />
+                  {uploadedFiles.length > 0 && (
+                    <div className="relative mt-6 flex flex-wrap justify-center gap-2">
+                      {uploadedFiles.map(f => (
+                        <span key={f.name} className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-700">
+                          <Icon name="file" className="h-3.5 w-3.5" />
+                          {f.name} · {fmtNum(f.rows)} linhas
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </GlassPanel>
 
-              <div className="space-y-3">
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
-                  <p className="mb-3 text-[10px] font-bold uppercase tracking-widest text-zinc-500">Parâmetros</p>
-                  <div className="space-y-3">
+              <div className="space-y-4">
+                <GlassPanel className="p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">Parâmetros operacionais</p>
+                      <p className="mt-1 text-sm text-slate-500">Ajuste lead time, período e margem sem alterar o motor de dados.</p>
+                    </div>
+                    <Icon name="sliders" className="h-5 w-5 text-emerald-700" />
+                  </div>
+
+                  <div className="mt-5 grid gap-3">
                     {([
                       ['Lead time China', 'leadTimeDias', 'dias'],
                       ['Período WooCommerce', 'periodoRelatorioDias', 'dias'],
                       ['Estoque de segurança', 'estoqueSegurancaDias', 'dias'],
                     ] as const).map(([label, key, unit]) => (
-                      <div key={key} className="flex items-center justify-between gap-3">
-                        <label className="text-xs text-zinc-400">{label}</label>
-                        <div className="flex items-center gap-1.5">
+                      <label key={key} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                        <span className="text-xs font-medium text-slate-500">{label}</span>
+                        <span className="flex items-center gap-2">
                           <input
                             type="number"
                             min={0}
                             value={params[key]}
                             onChange={e => setParams(p => ({ ...p, [key]: Number(e.target.value) }))}
-                            className="w-16 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-right text-xs text-zinc-100 focus:border-emerald-500 focus:outline-none"
+                            className="w-20 rounded-xl border border-slate-200 bg-white px-3 py-2 text-right text-sm font-semibold text-slate-900 outline-none transition focus:border-emerald-400/60"
                           />
-                          <span className="text-[10px] text-zinc-500">{unit}</span>
-                        </div>
-                      </div>
+                          <span className="text-[11px] text-slate-500">{unit}</span>
+                        </span>
+                      </label>
                     ))}
+                    <label className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                      <span className="text-xs font-medium text-slate-500">Margem padrão</span>
+                      <span className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={0}
+                          max={95}
+                          value={Math.round(params.margemPadrao * 100)}
+                          onChange={e => setParams(p => ({ ...p, margemPadrao: Number(e.target.value) / 100 }))}
+                          className="w-20 rounded-xl border border-slate-200 bg-white px-3 py-2 text-right text-sm font-semibold text-slate-900 outline-none transition focus:border-emerald-400/60"
+                        />
+                        <span className="text-[11px] text-slate-500">%</span>
+                      </span>
+                    </label>
                   </div>
-                </div>
 
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleProcess}
-                    disabled={processLoading}
-                    className="flex-1 rounded-md bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {processLoading ? 'Processando WooCommerce...' : 'Processar SANCO + WooCommerce'}
-                  </button>
-                  <button onClick={handleLoadMock} className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-medium text-zinc-300 transition hover:border-zinc-600">
-                    Demo
-                  </button>
-                </div>
+                  <div className="mt-5 grid gap-2 sm:grid-cols-2">
+                    <button
+                      onClick={handleProcess}
+                      disabled={processLoading}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {processLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : <Icon name="refresh" className="h-4 w-4" />}
+                      {processLoading ? 'Processando...' : 'Processar SANCO + WooCommerce'}
+                    </button>
+                    <button onClick={handleLoadMock} className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50">
+                      Carregar demo
+                    </button>
+                  </div>
+                </GlassPanel>
 
                 {processLoading && (
-                  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3">
-                    <p className="text-xs font-semibold text-emerald-300">Cruzando dados agora...</p>
-                    <p className="mt-1 text-[11px] leading-5 text-zinc-400">Estoque atual do CSV SANCO + pedidos WooCommerce válidos dos últimos {params.periodoRelatorioDias} dias.</p>
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700 shadow-sm">
+                    <p className="font-bold">Cruzando dados agora...</p>
+                    <p className="mt-1 text-xs leading-5 text-emerald-700/70">Estoque SANCO + pedidos WooCommerce válidos dos últimos {params.periodoRelatorioDias} dias.</p>
+                  </div>
+                )}
+
+                {processSuccess && !processLoading && (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700 shadow-sm">
+                    <div className="flex items-start gap-3">
+                      <Icon name="check" className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
+                      <p>{processSuccess}</p>
+                    </div>
                   </div>
                 )}
 
                 {error && (
-                  <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3">
-                    <p className="text-xs font-semibold text-rose-300">Não foi possível processar</p>
-                    <p className="mt-1 text-[11px] leading-5 text-zinc-400">{error}</p>
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 shadow-sm">
+                    <div className="flex items-start gap-3">
+                      <Icon name="alert" className="mt-0.5 h-4 w-4 shrink-0 text-rose-700" />
+                      <div>
+                        <p className="font-bold">Não foi possível processar</p>
+                        <p className="mt-1 text-xs leading-5 text-rose-700/70">{error}</p>
+                      </div>
+                    </div>
                   </div>
                 )}
 
                 {dataSource.lastProcessed && (
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-500">Fonte atual</p>
-                    <p className="mt-2 text-[11px] text-zinc-300">Estoque: {dataSource.stockSource}</p>
-                    <p className="mt-1 text-[11px] text-zinc-300">Demanda: {dataSource.demandSource}</p>
-                    <p className="mt-1 text-[11px] text-zinc-500">Último processamento: {fmtDateTime(dataSource.lastProcessed)}</p>
-                  </div>
+                  <GlassPanel className="p-4">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">Fonte atual</p>
+                    <div className="mt-3 space-y-2 text-xs text-slate-500">
+                      <p><span className="text-slate-500">Estoque:</span> {dataSource.stockSource}</p>
+                      <p><span className="text-slate-500">Demanda:</span> {dataSource.demandSource}</p>
+                      <p><span className="text-slate-500">Processado:</span> {fmtDateTime(dataSource.lastProcessed)}</p>
+                    </div>
+                  </GlassPanel>
                 )}
-
-                {hasData && <button onClick={() => setShowImport(false)} className="w-full text-[11px] text-zinc-500 hover:text-zinc-300">Fechar painel</button>}
               </div>
             </div>
           </div>
-        </div>
+        </section>
       )}
 
-      {/* ── MAIN ── */}
-      <main className="mx-auto max-w-screen-2xl px-6 lg:px-8 py-8">
-
-        {/* ════ EXECUTIVE OVERVIEW ════ */}
+      <main className="mx-auto max-w-screen-2xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+        {/* OVERVIEW */}
         {tab === 'overview' && summary && (
-          <div className="space-y-8">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Executive overview</h1>
-              <p className="mt-1 text-sm text-zinc-500">
-                Transformamos dados dispersos em decisões financeiras claras: o que comprar, o que parar de comprar e onde o caixa está preso.
-              </p>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-4">
-              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
-                <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-emerald-400">Estoque atual</p>
-                <p className="mt-2 truncate text-sm font-semibold text-zinc-100">{dataSource.stockSource}</p>
-                <p className="mt-1 text-[11px] text-zinc-500">Fonte oficial de saldo do dia</p>
-              </div>
-              <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-4">
-                <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-blue-400">Demanda real</p>
-                <p className="mt-2 truncate text-sm font-semibold text-zinc-100">{dataSource.demandSource}</p>
-                <p className="mt-1 text-[11px] text-zinc-500">Status: processando + enviado</p>
-              </div>
-              <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4">
-                <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-violet-400">Volume analisado</p>
-                <p className="mt-2 text-sm font-semibold text-zinc-100">{dataSource.wooItems ? fmtNum(dataSource.wooItems) + ' un vendidas' : fmtNum(data.reduce((a,d)=>a+d.consumo,0)) + ' un'}</p>
-                <p className="mt-1 text-[11px] text-zinc-500">{dataSource.wooSkus ? `${dataSource.wooSkus} SKUs vendidos` : `${data.length} SKUs avaliados`}</p>
-              </div>
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
-                <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-500">Atualizado em</p>
-                <p className="mt-2 text-sm font-semibold text-zinc-100">{dataSource.lastProcessed ? fmtDateTime(dataSource.lastProcessed) : 'Agora'}</p>
-                <p className="mt-1 text-[11px] text-zinc-500">Pronto para decisão de compra</p>
-              </div>
-            </div>
-
-            {/* Row 1: 4 main KPIs */}
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <KpiCard label="Capital total em estoque" value={fmtBRLcompact(summary.valorTotal)} sub={`${summary.totalSkus} SKUs · ${fmtNum(data.reduce((a,d)=>a+d.estoqueUtil,0))} unidades`} icon="cash" big />
-              <KpiCard label="Capital parado" value={fmtBRLcompact(summary.capitalParado)} sub={`${fmtPct(summary.pctParado)} do estoque · ${summary.parado + summary.excesso} SKUs`} icon="block" accent="violet" big />
-              <KpiCard label="Receita em risco" value={fmtBRLcompact(summary.receitaEmRisco)} sub="Por rupturas iminentes" icon="alert" accent="danger" big />
-              <KpiCard label="Oportunidade financeira" value={fmtBRLcompact(summary.oportunidadeFinanceira)} sub="Caixa potencial liberável" icon="bolt" accent="success" big />
-            </div>
-
-            {/* Distribution */}
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 p-6">
-              <p className="mb-4 text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-500">Distribuição financeira do portfólio</p>
-              <div className="flex h-2.5 w-full overflow-hidden rounded-full">
-                {[
-                  { count: summary.criticos, color: 'bg-rose-500', label: 'Crítico' },
-                  { count: summary.ruptura, color: 'bg-orange-500', label: 'Ruptura' },
-                  { count: summary.atencao, color: 'bg-amber-500', label: 'Atenção' },
-                  { count: summary.saudavel, color: 'bg-emerald-500', label: 'Saudável' },
-                  { count: summary.excesso, color: 'bg-blue-500', label: 'Excesso' },
-                  { count: summary.parado, color: 'bg-violet-500', label: 'Parado' },
-                ].map((s, i) => s.count > 0 && (
-                  <div key={i} className={s.color} style={{ width: `${(s.count / summary.totalSkus) * 100}%` }} />
-                ))}
-              </div>
-              <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-6">
-                {[
-                  { label: 'Crítico', count: summary.criticos, dot: 'bg-rose-500', text: 'text-rose-400' },
-                  { label: 'Ruptura', count: summary.ruptura, dot: 'bg-orange-500', text: 'text-orange-400' },
-                  { label: 'Atenção', count: summary.atencao, dot: 'bg-amber-500', text: 'text-amber-400' },
-                  { label: 'Saudável', count: summary.saudavel, dot: 'bg-emerald-500', text: 'text-emerald-400' },
-                  { label: 'Excesso', count: summary.excesso, dot: 'bg-blue-500', text: 'text-blue-400' },
-                  { label: 'Parado', count: summary.parado, dot: 'bg-violet-500', text: 'text-violet-400' },
-                ].map(s => (
-                  <div key={s.label}>
-                    <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
-                      <span className={`h-2 w-2 rounded-full ${s.dot}`} />
-                      {s.label}
-                    </div>
-                    <p className={`mt-0.5 text-lg font-semibold ${s.text}`}>{s.count}</p>
+          <div className="space-y-8 lg:space-y-10">
+            <section className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+              <GlassPanel className="relative overflow-hidden p-7 sm:p-8 lg:p-10">
+                <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-slate-200" />
+                <div className="hidden" />
+                <div className="relative max-w-4xl">
+                  <div className="flex flex-wrap gap-2">
+                    <StatusPill label="Command Center executivo" tone="emerald" pulse />
+                    <StatusPill label="Venda real + estoque atual" tone="cyan" />
+                    <StatusPill label="Copiloto IA ativo" tone="violet" />
                   </div>
-                ))}
-              </div>
-            </div>
+                  <h1 className="mt-7 max-w-4xl text-4xl font-bold tracking-[-0.04em] text-slate-900 sm:text-5xl lg:text-6xl">
+                    Command Center de Compra e Estoque
+                  </h1>
+                  <p className="mt-5 max-w-2xl text-base leading-7 text-slate-600 sm:text-lg">
+                    Venda real + estoque atual para decidir o que comprar, pausar e priorizar. Em poucos segundos, a diretoria vê risco, capital parado e pedido recomendado.
+                  </p>
 
-            {/* Top decisions */}
-            <div>
-              <div className="mb-4 flex items-center justify-between">
-                <div>
-                  <h2 className="text-base font-semibold">Top 5 decisões para tomar agora</h2>
-                  <p className="text-xs text-zinc-500">Score baseado em receita em risco e capital travado</p>
-                </div>
-                <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-medium text-emerald-400">PRIORITIZADO POR IA</span>
-              </div>
-              <div className="space-y-2">
-                {topDecisions.map((d, i) => (
-                  <div key={d.codigo} className="group flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 transition hover:border-zinc-700">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-800 text-sm font-bold text-zinc-300">
-                      {i + 1}
+                  <div className="mt-8 grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Volume analisado</p>
+                      <p className="mt-2 text-xl font-bold text-slate-900">{fmtNum(dataSource.wooItems || summary.unidadesVendidas)} un</p>
+                      <p className="mt-1 text-xs text-slate-500">{fmtNum(dataSource.wooOrders || 3217)} pedidos / {fmtNum(dataSource.wooSkus || summary.skusComDemanda)} SKUs com demanda</p>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <ClassBadge c={d.classification} />
-                        <RecBadge r={d.recommendation} />
-                        <span className="font-mono text-[10px] text-zinc-600">{d.codigo}</span>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Atualizado</p>
+                      <p className="mt-2 text-xl font-bold text-slate-900">{dataSource.lastProcessed ? fmtDate(dataSource.lastProcessed) : 'Hoje'}</p>
+                      <p className="mt-1 text-xs text-slate-500">Fonte pronta para decisão de compra</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">SKUs avaliados</p>
+                      <p className="mt-2 text-xl font-bold text-slate-900">{fmtNum(summary.totalSkus)}</p>
+                      <p className="mt-1 text-xs text-slate-500">Estoque atual + demanda real</p>
+                    </div>
+                  </div>
+                </div>
+              </GlassPanel>
+
+              <GlassPanel className="relative overflow-hidden p-6">
+                <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-rose-200" />
+                <div className="relative">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Próxima decisão</p>
+                    <span className="rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[10px] font-black text-rose-700">AGORA</span>
+                  </div>
+
+                  {heroDecision ? (
+                    <div className="mt-6">
+                      <div className="flex flex-wrap gap-2">
+                        <ClassBadge c={heroDecision.classification} />
+                        <RecBadge r={heroDecision.recommendation} />
                       </div>
-                      <p className="mt-1 truncate text-sm font-medium text-zinc-100">{d.produto}</p>
-                      <p className="mt-0.5 text-xs text-zinc-500">{d.motivo}</p>
+                      <h2 className="mt-5 text-2xl font-semibold tracking-tight text-slate-900">{heroDecision.produto}</h2>
+                      <p className="mt-1 font-mono text-xs text-slate-500">{heroDecision.codigo}</p>
+                      <div className="mt-6 grid grid-cols-2 gap-3">
+                        <div className="rounded-xl border border-rose-100 bg-rose-50 p-4">
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-rose-700/70">Receita em risco</p>
+                          <p className="mt-2 text-2xl font-black text-rose-700">{fmtBRLcompact(heroDecision.receitaEmRisco)}</p>
+                        </div>
+                        <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4">
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-emerald-700/70">Sugestão</p>
+                          <p className="mt-2 text-2xl font-black text-emerald-700">{fmtNum(heroDecision.sugestaoCompra)} un</p>
+                        </div>
+                      </div>
+                      <p className="mt-5 text-sm leading-6 text-slate-500">{heroDecision.motivo}</p>
+                      <button onClick={() => setTab('import-ai')} className="mt-6 inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 shadow-sm transition hover:border-slate-300 hover:bg-slate-50">
+                        Ver pedido recomendado
+                        <Icon name="arrowRight" className="h-4 w-4" />
+                      </button>
                     </div>
-                    <div className="hidden md:flex flex-col items-end gap-0.5 text-right shrink-0">
-                      {d.receitaEmRisco > 0 && (
-                        <p className="text-xs font-semibold text-rose-400">{fmtBRLcompact(d.receitaEmRisco)} em risco</p>
-                      )}
-                      {d.valorEstoque > 0 && (
-                        <p className="text-[10px] text-zinc-500">{fmtBRLcompact(d.valorEstoque)} em estoque</p>
-                      )}
-                      {d.sugestaoCompra > 0 && (
-                        <p className="text-[10px] font-medium text-emerald-400">Comprar {fmtNum(d.sugestaoCompra)} un</p>
-                      )}
+                  ) : (
+                    <EmptyState title="Sem decisão pendente" subtitle="Importe dados para gerar a priorização." />
+                  )}
+                </div>
+              </GlassPanel>
+            </section>
+
+            <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <KpiCard label="Receita em risco" value={fmtBRLcompact(summary.receitaEmRisco)} sub={`${summary.criticos + summary.ruptura} SKUs críticos ou em ruptura`} icon="alert" tone="rose" emphasis />
+              <KpiCard label="Capital parado" value={fmtBRLcompact(summary.capitalParado)} sub={`${fmtPct(summary.pctParado)} do estoque em parado/excesso`} icon="cash" tone="violet" emphasis />
+              <KpiCard label="Compra recomendada" value={fmtBRLcompact(summary.sugestaoTotal)} sub={`${fmtNum(summary.compraRecomendadaUn)} unidades sugeridas`} icon="truck" tone="emerald" emphasis />
+              <KpiCard label="Caixa liberável" value={fmtBRLcompact(summary.caixaLiberavel)} sub="Estimativa ao promover/liquidar travados" icon="bolt" tone="cyan" emphasis />
+            </section>
+
+            <section className="grid gap-4 lg:grid-cols-3">
+              <DataSourceCard icon="store" title="WooCommerce" status={`Últimos ${params.periodoRelatorioDias} dias`} detail={`${demandSourceLabel}. Status válidos: processing e shipped-out.`} tone="emerald" />
+              <DataSourceCard icon="file" title="SANCO CSV" status="Estoque atual do dia" detail={`${estoqueSourceLabel}. Fonte oficial do saldo operacional atual.`} tone="cyan" />
+              <DataSourceCard icon="brain" title="OpenAI" status="Copiloto operacional" detail="Perguntas sobre ruptura, compra urgente, produtos parados e simulação de orçamento." tone="violet" />
+            </section>
+
+            <section className="space-y-5">
+              <SectionTitle
+                eyebrow="Prioridade executiva"
+                title="Decisões de hoje"
+                subtitle="Top 5 SKUs em cards executivos. O ranking combina risco de ruptura, receita em risco, capital travado e recomendação operacional."
+                right={<button onClick={() => setAiOpen(true)} className="rounded-full border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-700 transition hover:bg-violet-100">Perguntar para IA</button>}
+              />
+              <GlassPanel className="overflow-hidden">
+                <div className="hidden grid-cols-[72px_minmax(0,1.55fr)_180px_160px_150px] border-b border-slate-100 bg-slate-50 px-5 py-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500 lg:grid">
+                  <span>Rank</span>
+                  <span>Produto</span>
+                  <span>Status</span>
+                  <span className="text-right">Receita em risco</span>
+                  <span className="text-right">Comprar</span>
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {topDecisions.map((d, i) => (
+                    <div key={d.codigo} className="grid gap-4 px-5 py-5 transition hover:bg-slate-50 lg:grid-cols-[72px_minmax(0,1.55fr)_180px_160px_150px] lg:items-center">
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-xs font-bold text-slate-700 shadow-sm">#{i + 1}</span>
+                        <span className={cn('text-sm font-bold lg:hidden', d.scorePrioridade >= 70 ? 'text-rose-700' : d.scorePrioridade >= 40 ? 'text-amber-700' : 'text-emerald-700')}>Score {d.scorePrioridade}</span>
+                      </div>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-900">{d.produto}</p>
+                        <p className="mt-1 font-mono text-[11px] text-slate-400">{d.codigo}</p>
+                        <p className="mt-2 line-clamp-1 text-xs leading-5 text-slate-500">{d.motivo}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2"><ClassBadge c={d.classification} /><RecBadge r={d.recommendation} /></div>
+                      <div className="text-left lg:text-right">
+                        <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400 lg:hidden">Receita em risco</p>
+                        <p className="text-sm font-bold text-rose-700">{fmtBRLcompact(d.receitaEmRisco)}</p>
+                      </div>
+                      <div className="text-left lg:text-right">
+                        <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400 lg:hidden">Comprar</p>
+                        <p className="text-sm font-bold text-emerald-700">{fmtNum(d.sugestaoCompra)} un</p>
+                      </div>
                     </div>
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-800 text-sm font-bold">
-                      <span className={d.scorePrioridade >= 70 ? 'text-rose-400' : d.scorePrioridade >= 40 ? 'text-amber-400' : 'text-emerald-400'}>
-                        {d.scorePrioridade}
-                      </span>
-                    </div>
+                  ))}
+                </div>
+              </GlassPanel>
+            </section>
+
+            <section className="grid gap-4 lg:grid-cols-3">
+              <button onClick={() => setTab('cash-leak')} className="group rounded-xl border border-slate-200 bg-white p-6 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-violet-200 hover:shadow-md">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-violet-50 text-violet-700 ring-1 ring-violet-100"><Icon name="cash" className="h-5 w-5" /></div>
+                <p className="mt-5 text-lg font-semibold text-slate-900">Onde meu dinheiro está parado?</p>
+                <p className="mt-2 text-sm leading-6 text-slate-500">{fmtBRLcompact(summary.capitalParado)} travado em {summary.parado + summary.excesso} SKUs.</p>
+                <p className="mt-4 text-sm font-bold text-violet-700">Ver caixa parado →</p>
+              </button>
+              <button onClick={() => setTab('revenue-risk')} className="group rounded-xl border border-slate-200 bg-white p-6 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-rose-200 hover:shadow-md">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-rose-50 text-rose-700 ring-1 ring-rose-100"><Icon name="alert" className="h-5 w-5" /></div>
+                <p className="mt-5 text-lg font-semibold text-slate-900">O que pode romper?</p>
+                <p className="mt-2 text-sm leading-6 text-slate-500">{summary.criticos + summary.ruptura} SKUs em risco e {fmtBRLcompact(summary.receitaEmRisco)} em jogo.</p>
+                <p className="mt-4 text-sm font-bold text-rose-700">Ver risco de ruptura →</p>
+              </button>
+              <button onClick={() => setTab('not-buy')} className="group rounded-xl border border-slate-200 bg-white p-6 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-amber-200 hover:shadow-md">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-amber-50 text-amber-700 ring-1 ring-amber-100"><Icon name="block" className="h-5 w-5" /></div>
+                <p className="mt-5 text-lg font-semibold text-slate-900">O que não deve comprar?</p>
+                <p className="mt-2 text-sm leading-6 text-slate-500">{notBuyData.length} SKUs com recomendação de pausar, promover, liquidar ou descontinuar.</p>
+                <p className="mt-4 text-sm font-bold text-amber-700">Ver não recomprar →</p>
+              </button>
+            </section>
+
+            <GlassPanel className="p-6">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">Pulso do portfólio</p>
+                  <p className="mt-2 text-lg font-semibold text-slate-900">Distribuição por classificação</p>
+                </div>
+                <p className="text-sm text-slate-500">{fmtNum(summary.totalSkus)} SKUs avaliados</p>
+              </div>
+              <div className="mt-6 flex h-3 overflow-hidden rounded-full bg-slate-50">
+                {[
+                  { count: summary.criticos, color: 'bg-rose-500' },
+                  { count: summary.ruptura, color: 'bg-orange-500' },
+                  { count: summary.atencao, color: 'bg-amber-500' },
+                  { count: summary.saudavel, color: 'bg-emerald-500' },
+                  { count: summary.excesso, color: 'bg-sky-500' },
+                  { count: summary.parado, color: 'bg-violet-500' },
+                ].map((s, i) => s.count > 0 && <div key={i} className={s.color} style={{ width: `${(s.count / summary.totalSkus) * 100}%` }} />)}
+              </div>
+              <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                {([
+                  ['Crítico', summary.criticos, 'bg-rose-400', 'text-rose-700'],
+                  ['Ruptura', summary.ruptura, 'bg-orange-400', 'text-orange-700'],
+                  ['Atenção', summary.atencao, 'bg-amber-400', 'text-amber-700'],
+                  ['Saudável', summary.saudavel, 'bg-emerald-500', 'text-emerald-700'],
+                  ['Excesso', summary.excesso, 'bg-sky-400', 'text-sky-700'],
+                  ['Parado', summary.parado, 'bg-violet-500', 'text-violet-700'],
+                ] as const).map(([label, count, dot, text]) => (
+                  <div key={label} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex items-center gap-2 text-xs text-slate-500"><span className={cn('h-2 w-2 rounded-full', dot)} />{label}</div>
+                    <p className={cn('mt-2 text-2xl font-black', text)}>{count}</p>
                   </div>
                 ))}
               </div>
-            </div>
-
-            {/* Action shortcuts */}
-            <div className="grid gap-3 md:grid-cols-3">
-              <button onClick={() => setTab('cash-leak')} className="group rounded-xl border border-zinc-800 bg-zinc-900/30 p-5 text-left transition hover:border-violet-500/50 hover:bg-violet-500/5">
-                <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-violet-500/10 text-violet-400">
-                  <Icon name="cash" />
-                </div>
-                <p className="text-sm font-semibold text-zinc-100">Onde meu dinheiro está parado?</p>
-                <p className="mt-1 text-xs text-zinc-500">{fmtBRLcompact(summary.capitalParado)} travado em {summary.parado + summary.excesso} SKUs</p>
-                <p className="mt-3 text-[11px] text-violet-400 group-hover:text-violet-300">Ver cash leak detector →</p>
-              </button>
-              <button onClick={() => setTab('revenue-risk')} className="group rounded-xl border border-zinc-800 bg-zinc-900/30 p-5 text-left transition hover:border-rose-500/50 hover:bg-rose-500/5">
-                <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-rose-500/10 text-rose-400">
-                  <Icon name="alert" />
-                </div>
-                <p className="text-sm font-semibold text-zinc-100">Quais produtos vão romper?</p>
-                <p className="mt-1 text-xs text-zinc-500">{summary.criticos + summary.ruptura} SKUs em risco · {fmtBRLcompact(summary.receitaEmRisco)} em jogo</p>
-                <p className="mt-3 text-[11px] text-rose-400 group-hover:text-rose-300">Ver revenue at risk →</p>
-              </button>
-              <button onClick={() => setTab('import-ai')} className="group rounded-xl border border-zinc-800 bg-zinc-900/30 p-5 text-left transition hover:border-emerald-500/50 hover:bg-emerald-500/5">
-                <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
-                  <Icon name="truck" />
-                </div>
-                <p className="text-sm font-semibold text-zinc-100">O que devo comprar agora?</p>
-                <p className="mt-1 text-xs text-zinc-500">{importOrderData.length} SKUs · {fmtBRLcompact(summary.sugestaoTotal)} sugeridos</p>
-                <p className="mt-3 text-[11px] text-emerald-400 group-hover:text-emerald-300">Ver import order AI →</p>
-              </button>
-            </div>
+            </GlassPanel>
           </div>
         )}
 
-        {/* ════ CASH LEAK DETECTOR ════ */}
+        {/* CAIXA PARADO */}
         {tab === 'cash-leak' && summary && (
           <div className="space-y-6">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Cash leak detector</h1>
-              <p className="mt-1 text-sm text-zinc-500">Onde seu caixa está vazando — produtos que prendem capital sem gerar retorno</p>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-4">
-              <KpiCard label="Caixa preso total" value={fmtBRLcompact(summary.capitalParado)} accent="violet" icon="cash" />
-              <KpiCard label="SKUs sem giro" value={summary.parado} accent="violet" sub="Sem venda no período" />
-              <KpiCard label="SKUs em excesso" value={summary.excesso} accent="info" sub="Cobertura > 90 dias" />
-              <KpiCard label="Caixa liberável estimado" value={fmtBRLcompact(summary.capitalParado * 0.6)} accent="success" sub="Com promoção/liquidação" />
-            </div>
-
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 overflow-hidden">
-              <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-3">
-                <p className="text-sm font-semibold">Maiores travadores de capital</p>
+            <SectionTitle
+              eyebrow="Cash Command"
+              title="Caixa parado"
+              subtitle="Produtos que prendem capital e reduzem a capacidade de compra dos itens que vendem."
+              right={
                 <button onClick={() => exportCSV(cashLeakData.map(d => ({
                   Codigo: d.codigo, Produto: d.produto, ValorParado: d.valorEstoque, EstoqueUtil: d.estoqueUtil,
                   Consumo: d.consumo, Cobertura: isFinite(d.diasCobertura) ? Math.round(d.diasCobertura) : '∞',
                   Recomendacao: REC_LABELS[d.recommendation], Motivo: d.motivo,
-                })), 'cash_leak.csv')} className="flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-600">
-                  <Icon name="download" className="w-3 h-3" />
-                  Exportar CSV
+                })), 'caixa_parado.csv')} className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50">
+                  <Icon name="download" className="h-4 w-4" /> Exportar CSV
                 </button>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="border-b border-zinc-800 bg-zinc-900/50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-zinc-500">Produto</th>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-zinc-500">Status</th>
-                      <th className="px-4 py-3 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Capital travado</th>
-                      <th className="px-4 py-3 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Estoque</th>
-                      <th className="px-4 py-3 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Cobertura</th>
-                      <th className="px-4 py-3 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Giro</th>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-zinc-500">Ação recomendada</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-800">
-                    {cashLeakData.length === 0 ? (
-                      <tr><td colSpan={7} className="px-4 py-8 text-center text-zinc-500">Nenhum vazamento de caixa detectado.</td></tr>
-                    ) : cashLeakData.map(d => (
-                      <tr key={d.codigo} className="hover:bg-zinc-900/30">
-                        <td className="px-4 py-3 max-w-[260px]">
-                          <p className="truncate text-[13px] font-medium text-zinc-100">{d.produto}</p>
-                          <p className="font-mono text-[10px] text-zinc-600">{d.codigo}</p>
-                        </td>
-                        <td className="px-4 py-3"><ClassBadge c={d.classification} /></td>
-                        <td className="px-4 py-3 text-right text-[13px] font-semibold text-violet-300">{fmtBRL(d.valorEstoque)}</td>
-                        <td className="px-4 py-3 text-right text-[12px] text-zinc-400">{fmtNum(d.estoqueUtil)} un</td>
-                        <td className="px-4 py-3 text-right text-[12px] text-zinc-400">{fmtDias(d.diasCobertura)}</td>
-                        <td className="px-4 py-3 text-right text-[12px] text-zinc-500">{d.giro === 999 ? '∞' : d.giro.toFixed(2) + 'x'}</td>
-                        <td className="px-4 py-3"><RecBadge r={d.recommendation} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              }
+            />
+
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <KpiCard label="Capital parado" value={fmtBRLcompact(summary.capitalParado)} tone="violet" icon="cash" />
+              <KpiCard label="SKUs parados" value={summary.parado} tone="violet" sub="Sem venda no período" icon="block" />
+              <KpiCard label="SKUs em excesso" value={summary.excesso} tone="cyan" sub="Cobertura maior que 90 dias" icon="package" />
+              <KpiCard label="Caixa liberável" value={fmtBRLcompact(summary.caixaLiberavel)} tone="emerald" sub="Estimativa conservadora de 60%" icon="bolt" />
             </div>
+
+            <GlassPanel className="overflow-hidden">
+              <div className="border-b border-slate-200 px-5 py-4">
+                <p className="text-sm font-semibold text-slate-900">Maiores travadores de capital</p>
+                <p className="mt-1 text-xs text-slate-500">Ordenado por valor de estoque travado.</p>
+              </div>
+              {cashLeakData.length === 0 ? (
+                <EmptyState title="Nenhum vazamento de caixa detectado" subtitle="Não há SKUs classificados como parado ou excesso." icon="check" />
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Produto</th>
+                        <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Status</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Capital travado</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Estoque</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Cobertura</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Giro</th>
+                        <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Ação</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {cashLeakData.map(d => (
+                        <tr key={d.codigo} className="transition hover:bg-slate-50">
+                          <td className="max-w-[300px] px-5 py-4">
+                            <p className="truncate font-semibold text-slate-900">{d.produto}</p>
+                            <p className="font-mono text-[10px] text-slate-500">{d.codigo}</p>
+                          </td>
+                          <td className="px-5 py-4"><ClassBadge c={d.classification} /></td>
+                          <td className="px-5 py-4 text-right font-black text-violet-700">{fmtBRL(d.valorEstoque)}</td>
+                          <td className="px-5 py-4 text-right text-slate-500">{fmtNum(d.estoqueUtil)} un</td>
+                          <td className="px-5 py-4 text-right text-slate-500">{fmtDias(d.diasCobertura)}</td>
+                          <td className="px-5 py-4 text-right text-slate-500">{d.giro === 999 ? '∞' : d.giro.toFixed(2) + 'x'}</td>
+                          <td className="px-5 py-4"><RecBadge r={d.recommendation} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </GlassPanel>
           </div>
         )}
 
-        {/* ════ REVENUE AT RISK ════ */}
+        {/* RISCO DE RUPTURA */}
         {tab === 'revenue-risk' && summary && (
           <div className="space-y-6">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Revenue at risk</h1>
-              <p className="mt-1 text-sm text-zinc-500">Quanto deixaremos de faturar se essas rupturas se confirmarem</p>
+            <SectionTitle eyebrow="Revenue Protection" title="Risco de ruptura" subtitle="Produtos com cobertura insuficiente, demanda ativa e potencial de receita perdida." />
+
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <KpiCard label="Receita em risco" value={fmtBRLcompact(summary.receitaEmRisco)} tone="rose" icon="alert" />
+              <KpiCard label="SKUs críticos" value={summary.criticos} tone="rose" sub="Ruptura agora ou quase agora" icon="target" />
+              <KpiCard label="Ruptura iminente" value={summary.ruptura} tone="amber" sub="Cobertura até 15 dias" icon="clock" />
+              <KpiCard label="Em atenção" value={summary.atencao} tone="amber" sub="Cobertura até 30 dias" icon="shield" />
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-4">
-              <KpiCard label="Receita total em risco" value={fmtBRLcompact(summary.receitaEmRisco)} accent="danger" icon="alert" />
-              <KpiCard label="SKUs críticos" value={summary.criticos} accent="danger" sub="Ruptura agora" />
-              <KpiCard label="Ruptura iminente" value={summary.ruptura} accent="warning" sub="< 15 dias" />
-              <KpiCard label="Em atenção" value={summary.atencao} accent="warning" sub="< 30 dias" />
-            </div>
-
-            <div className="space-y-2">
+            <div className="space-y-3">
               {revenueRiskData.length === 0 ? (
-                <p className="rounded-xl border border-zinc-800 bg-zinc-900/30 p-8 text-center text-sm text-zinc-500">Nenhum produto em risco de ruptura.</p>
+                <EmptyState title="Nenhum produto em risco de ruptura" subtitle="A cobertura atual está saudável para o período analisado." icon="check" />
               ) : revenueRiskData.map((d, i) => (
-                <div key={d.codigo} className="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 hover:border-zinc-700">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-zinc-800 text-xs font-bold text-zinc-400">
-                    #{i + 1}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <ClassBadge c={d.classification} />
-                      <span className="font-mono text-[10px] text-zinc-600">{d.codigo}</span>
-                    </div>
-                    <p className="mt-1 truncate text-sm font-medium">{d.produto}</p>
-                    <p className="mt-0.5 text-xs text-zinc-500">{d.motivo}</p>
-                  </div>
-                  <div className="hidden lg:flex flex-col items-end gap-0.5 shrink-0 text-right">
-                    <p className="text-[10px] uppercase tracking-wider text-zinc-500">Receita em risco</p>
-                    <p className="text-base font-semibold text-rose-400">{fmtBRLcompact(d.receitaEmRisco)}</p>
-                    <p className="text-[10px] text-zinc-500">{fmtNum(d.consumo)} un consumidas · {fmtNum(d.estoqueUtil)} em estoque</p>
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <p className="text-[10px] uppercase tracking-wider text-zinc-500">Comprar</p>
-                    <p className="text-base font-semibold text-emerald-400">{fmtNum(d.sugestaoCompra)} un</p>
-                    <p className="text-[10px] text-zinc-500">{fmtBRLcompact(d.valorSugestaoCompra)}</p>
-                  </div>
-                </div>
+                <GlassPanel key={d.codigo} className={cn('overflow-hidden', CLASS_TONES[d.classification].border)}>
+                  <SkuCompactRow
+                    sku={d}
+                    index={i}
+                    right={
+                      <div className="grid shrink-0 grid-cols-2 gap-3 text-right sm:min-w-[340px]">
+                        <div className="hidden rounded-xl border border-rose-100 bg-rose-50 p-3 sm:block">
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-rose-700/70">Receita em risco</p>
+                          <p className="mt-1 font-black text-rose-700">{fmtBRLcompact(d.receitaEmRisco)}</p>
+                        </div>
+                        <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-emerald-700/70">Comprar</p>
+                          <p className="mt-1 font-black text-emerald-700">{fmtNum(d.sugestaoCompra)} un</p>
+                        </div>
+                      </div>
+                    }
+                  />
+                </GlassPanel>
               ))}
             </div>
           </div>
         )}
 
-        {/* ════ IMPORT ORDER AI ════ */}
+        {/* PEDIDO RECOMENDADO */}
         {tab === 'import-ai' && summary && (
           <div className="space-y-6">
-            <div className="flex items-start justify-between gap-4 flex-wrap">
-              <div>
-                <h1 className="text-2xl font-semibold tracking-tight">Import order AI</h1>
-                <p className="mt-1 text-sm text-zinc-500">Pedido de importação otimizado por algoritmo de priorização</p>
-              </div>
-              <button onClick={() => exportCSV(importOrderData.map(d => ({
-                Codigo: d.codigo, Produto: d.produto, EstoqueAtual: d.estoqueUtil,
-                ConsumoDiario: d.consumoDiario.toFixed(2), CoberturaAtual: isFinite(d.diasCobertura) ? Math.round(d.diasCobertura) : '∞',
-                QtdSugerida: d.sugestaoCompra, ValorEstimado: d.valorSugestaoCompra,
-                Prioridade: d.scorePrioridade >= 70 ? 'Alta' : d.scorePrioridade >= 40 ? 'Média' : 'Baixa',
-                Motivo: d.motivo,
-              })), 'pedido_importacao.csv')} className="flex items-center gap-1.5 rounded-md bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 hover:bg-emerald-400">
-                <Icon name="download" className="w-3.5 h-3.5" />
-                Exportar pedido
-              </button>
+            <SectionTitle
+              eyebrow="Purchase Intelligence"
+              title="Pedido recomendado"
+              subtitle="Lista priorizada para compra com base em cobertura, consumo real, lead time e receita em risco."
+              right={
+                <button onClick={() => exportCSV(importOrderData.map(d => ({
+                  Codigo: d.codigo, Produto: d.produto, EstoqueAtual: d.estoqueUtil,
+                  ConsumoDiario: d.consumoDiario.toFixed(2), CoberturaAtual: isFinite(d.diasCobertura) ? Math.round(d.diasCobertura) : '∞',
+                  QtdSugerida: d.sugestaoCompra, ValorEstimado: d.valorSugestaoCompra,
+                  Prioridade: d.scorePrioridade >= 70 ? 'Alta' : d.scorePrioridade >= 40 ? 'Média' : 'Baixa',
+                  Motivo: d.motivo,
+                })), 'pedido_recomendado.csv')} className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800">
+                  <Icon name="download" className="h-4 w-4" /> Exportar pedido
+                </button>
+              }
+            />
+
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <KpiCard label="SKUs no pedido" value={importOrderData.length} tone="emerald" icon="truck" />
+              <KpiCard label="Unidades sugeridas" value={fmtNum(summary.compraRecomendadaUn)} tone="emerald" icon="package" />
+              <KpiCard label="Investimento estimado" value={fmtBRLcompact(summary.sugestaoTotal)} tone="cyan" sub={`${params.leadTimeDias}d lead time + ${params.estoqueSegurancaDias}d segurança`} icon="cash" />
+              <KpiCard label="Lucro bruto potencial" value={fmtBRLcompact(summary.sugestaoTotal / (1 - params.margemPadrao) - summary.sugestaoTotal)} tone="violet" sub={`Margem padrão ${fmtPct(params.margemPadrao * 100)}`} icon="bolt" />
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-4">
-              <KpiCard label="SKUs no pedido" value={importOrderData.length} icon="truck" />
-              <KpiCard label="Unidades totais" value={fmtNum(importOrderData.reduce((a,d)=>a+d.sugestaoCompra,0))} sub="Soma de todas as sugestões" />
-              <KpiCard label="Investimento estimado" value={fmtBRLcompact(summary.sugestaoTotal)} accent="info" sub={`Lead time: ${params.leadTimeDias}d + ${params.estoqueSegurancaDias}d segurança`} />
-              <KpiCard label="ROI esperado" value={fmtBRLcompact(summary.sugestaoTotal / (1 - params.margemPadrao) - summary.sugestaoTotal)} accent="success" sub={`Margem ${(params.margemPadrao*100).toFixed(0)}%`} />
-            </div>
-
-            {/* Priority groups */}
             {(['alta', 'media', 'baixa'] as const).map(priority => {
               const items = importOrderData.filter(d => {
                 if (priority === 'alta') return d.scorePrioridade >= 70
@@ -1379,585 +1814,460 @@ export default function Page() {
               })
               if (items.length === 0) return null
               const config = {
-                alta: {
-                  label: 'Prioridade alta', desc: 'Comprar imediatamente — risco de ruptura',
-                  headerBg: 'bg-rose-500/5', dot: 'bg-rose-500', qty: 'text-rose-400',
-                },
-                media: {
-                  label: 'Prioridade média', desc: 'Incluir no próximo pedido',
-                  headerBg: 'bg-amber-500/5', dot: 'bg-amber-500', qty: 'text-amber-400',
-                },
-                baixa: {
-                  label: 'Prioridade baixa', desc: 'Pode aguardar próximo ciclo',
-                  headerBg: 'bg-emerald-500/5', dot: 'bg-emerald-500', qty: 'text-emerald-400',
-                },
+                alta: { label: 'Prioridade alta', desc: 'Comprar imediatamente — risco de ruptura ou receita relevante.', tone: 'rose' as Tone, text: 'text-rose-700' },
+                media: { label: 'Prioridade média', desc: 'Incluir no próximo pedido para proteger cobertura.', tone: 'amber' as Tone, text: 'text-amber-700' },
+                baixa: { label: 'Prioridade baixa', desc: 'Pode aguardar ciclo seguinte se orçamento apertar.', tone: 'emerald' as Tone, text: 'text-emerald-700' },
               }[priority]
               return (
-                <div key={priority} className="rounded-xl border border-zinc-800 bg-zinc-900/30 overflow-hidden">
-                  <div className={`border-b border-zinc-800 ${config.headerBg} px-5 py-3`}>
-                    <div className="flex items-center gap-2">
-                      <span className={`h-2 w-2 rounded-full ${config.dot}`}></span>
-                      <p className="text-sm font-semibold">{config.label}</p>
-                      <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">{items.length} SKUs · {fmtBRLcompact(items.reduce((a,d)=>a+d.valorSugestaoCompra,0))}</span>
+                <GlassPanel key={priority} className={cn('overflow-hidden', TONE_STYLES[config.tone].border)}>
+                  <div className={cn('border-b border-slate-200 p-5', TONE_STYLES[config.tone].bg)}>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-base font-semibold text-slate-900">{config.label}</p>
+                        <p className="mt-1 text-sm text-slate-500">{config.desc}</p>
+                      </div>
+                      <span className={cn('rounded-full border px-3 py-1.5 text-xs font-black', TONE_STYLES[config.tone].chip)}>
+                        {items.length} SKUs · {fmtBRLcompact(items.reduce((a, d) => a + d.valorSugestaoCompra, 0))}
+                      </span>
                     </div>
-                    <p className="mt-1 text-xs text-zinc-500">{config.desc}</p>
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
-                      <thead className="bg-zinc-900/40">
+                      <thead className="bg-slate-50">
                         <tr>
-                          <th className="px-4 py-2 text-left text-[10px] font-medium uppercase tracking-wider text-zinc-500">SKU</th>
-                          <th className="px-4 py-2 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Estoque</th>
-                          <th className="px-4 py-2 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Consumo/dia</th>
-                          <th className="px-4 py-2 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Cobertura</th>
-                          <th className="px-4 py-2 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Comprar</th>
-                          <th className="px-4 py-2 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Valor</th>
-                          <th className="px-4 py-2 text-left text-[10px] font-medium uppercase tracking-wider text-zinc-500">Motivo</th>
+                          <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">SKU</th>
+                          <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Estoque</th>
+                          <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Consumo/dia</th>
+                          <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Cobertura</th>
+                          <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Comprar</th>
+                          <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Valor</th>
+                          <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Motivo</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-zinc-800">
+                      <tbody className="divide-y divide-slate-100">
                         {items.map(d => (
-                          <tr key={d.codigo} className="hover:bg-zinc-900/30">
-                            <td className="px-4 py-2.5 max-w-[220px]">
-                              <p className="truncate text-[13px] font-medium">{d.produto}</p>
-                              <p className="font-mono text-[10px] text-zinc-600">{d.codigo}</p>
+                          <tr key={d.codigo} className="transition hover:bg-slate-50">
+                            <td className="max-w-[260px] px-5 py-4">
+                              <p className="truncate font-semibold text-slate-900">{d.produto}</p>
+                              <p className="font-mono text-[10px] text-slate-500">{d.codigo}</p>
                             </td>
-                            <td className="px-4 py-2.5 text-right text-[12px] text-zinc-400">{fmtNum(d.estoqueUtil)}</td>
-                            <td className="px-4 py-2.5 text-right text-[12px] text-zinc-400">{d.consumoDiario.toFixed(1)}</td>
-                            <td className="px-4 py-2.5 text-right text-[12px] text-zinc-400">{fmtDias(d.diasCobertura)}</td>
-                            <td className={`px-4 py-2.5 text-right text-[13px] font-bold ${config.qty}`}>{fmtNum(d.sugestaoCompra)} un</td>
-                            <td className="px-4 py-2.5 text-right text-[12px] font-medium text-zinc-300">{fmtBRL(d.valorSugestaoCompra)}</td>
-                            <td className="px-4 py-2.5 max-w-[260px]"><p className="truncate text-[11px] text-zinc-500">{d.motivo}</p></td>
+                            <td className="px-5 py-4 text-right text-slate-500">{fmtNum(d.estoqueUtil)}</td>
+                            <td className="px-5 py-4 text-right text-slate-500">{d.consumoDiario.toFixed(1)}</td>
+                            <td className="px-5 py-4 text-right text-slate-500">{fmtDias(d.diasCobertura)}</td>
+                            <td className={cn('px-5 py-4 text-right font-black', config.text)}>{fmtNum(d.sugestaoCompra)} un</td>
+                            <td className="px-5 py-4 text-right font-semibold text-slate-700">{fmtBRL(d.valorSugestaoCompra)}</td>
+                            <td className="max-w-[320px] px-5 py-4"><p className="line-clamp-1 text-xs text-slate-500">{d.motivo}</p></td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
-                </div>
+                </GlassPanel>
               )
             })}
           </div>
         )}
 
-        {/* ════ WHAT NOT TO BUY ════ */}
-        {tab === 'not-buy' && (
+        {/* NÃO RECOMPRAR */}
+        {tab === 'not-buy' && summary && (
           <div className="space-y-6">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">What not to buy</h1>
-              <p className="mt-1 text-sm text-zinc-500">Produtos onde recomprar significa queimar caixa</p>
+            <SectionTitle eyebrow="Capital Discipline" title="Não recomprar" subtitle="Produtos onde recomprar aumenta estoque parado, excesso ou capital travado." />
+
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <KpiCard label="SKUs para pausar/cortar" value={notBuyData.length} tone="amber" icon="block" />
+              <KpiCard label="Recompra evitável" value={fmtBRLcompact(notBuyData.reduce((a, d) => a + d.consumoDiario * params.leadTimeDias * d.valorUnitario, 0))} tone="amber" icon="shield" />
+              <KpiCard label="Capital travado" value={fmtBRLcompact(notBuyData.reduce((a, d) => a + d.valorEstoque, 0))} tone="violet" icon="cash" />
+              <KpiCard label="Liquidação estimada" value={fmtBRLcompact(notBuyData.filter(d => d.recommendation === 'liquidar').reduce((a, d) => a + d.valorEstoque * 0.6, 0))} tone="emerald" sub="60% do valor em estoque" icon="bolt" />
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-4">
-              <KpiCard label="SKUs para pausar/cortar" value={notBuyData.length} icon="block" accent="warning" />
-              <KpiCard label="Capital a evitar recompra" value={fmtBRLcompact(notBuyData.reduce((a,d)=>a+d.consumoDiario*params.leadTimeDias*d.valorUnitario,0))} accent="warning" />
-              <KpiCard label="Capital travado nesses SKUs" value={fmtBRLcompact(notBuyData.reduce((a,d)=>a+d.valorEstoque,0))} accent="violet" />
-              <KpiCard label="Liquidação estimada" value={fmtBRLcompact(notBuyData.filter(d => d.recommendation === 'liquidar').reduce((a,d)=>a+d.valorEstoque*0.6,0))} accent="success" sub="60% do valor" />
-            </div>
-
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="border-b border-zinc-800 bg-zinc-900/50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-zinc-500">Produto</th>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-zinc-500">Status</th>
-                      <th className="px-4 py-3 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Estoque</th>
-                      <th className="px-4 py-3 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Capital travado</th>
-                      <th className="px-4 py-3 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Cobertura</th>
-                      <th className="px-4 py-3 text-right text-[10px] font-medium uppercase tracking-wider text-zinc-500">Giro</th>
-                      <th className="px-4 py-3 text-left text-[10px] font-medium uppercase tracking-wider text-zinc-500">Ação</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-800">
-                    {notBuyData.length === 0 ? (
-                      <tr><td colSpan={7} className="px-4 py-8 text-center text-zinc-500">Todos os SKUs vale a pena recomprar.</td></tr>
-                    ) : notBuyData.map(d => (
-                      <tr key={d.codigo} className="hover:bg-zinc-900/30">
-                        <td className="px-4 py-3 max-w-[260px]">
-                          <p className="truncate text-[13px] font-medium">{d.produto}</p>
-                          <p className="font-mono text-[10px] text-zinc-600">{d.codigo}</p>
-                        </td>
-                        <td className="px-4 py-3"><ClassBadge c={d.classification} /></td>
-                        <td className="px-4 py-3 text-right text-[12px] text-zinc-400">{fmtNum(d.estoqueUtil)}</td>
-                        <td className="px-4 py-3 text-right text-[13px] font-semibold text-violet-300">{fmtBRL(d.valorEstoque)}</td>
-                        <td className="px-4 py-3 text-right text-[12px] text-zinc-400">{fmtDias(d.diasCobertura)}</td>
-                        <td className="px-4 py-3 text-right text-[12px] text-zinc-500">{d.giro === 999 ? '∞' : d.giro.toFixed(2) + 'x'}</td>
-                        <td className="px-4 py-3"><RecBadge r={d.recommendation} /></td>
+            <GlassPanel className="overflow-hidden">
+              {notBuyData.length === 0 ? (
+                <EmptyState title="Nenhum SKU bloqueado para recompra" subtitle="Não há recomendações de pausar, liquidar, promover ou descontinuar." icon="check" />
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Produto</th>
+                        <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Status</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Estoque</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Capital travado</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Cobertura</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Giro</th>
+                        <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Ação</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {notBuyData.map(d => (
+                        <tr key={d.codigo} className="transition hover:bg-slate-50">
+                          <td className="max-w-[300px] px-5 py-4">
+                            <p className="truncate font-semibold text-slate-900">{d.produto}</p>
+                            <p className="font-mono text-[10px] text-slate-500">{d.codigo}</p>
+                          </td>
+                          <td className="px-5 py-4"><ClassBadge c={d.classification} /></td>
+                          <td className="px-5 py-4 text-right text-slate-500">{fmtNum(d.estoqueUtil)} un</td>
+                          <td className="px-5 py-4 text-right font-black text-violet-700">{fmtBRL(d.valorEstoque)}</td>
+                          <td className="px-5 py-4 text-right text-slate-500">{fmtDias(d.diasCobertura)}</td>
+                          <td className="px-5 py-4 text-right text-slate-500">{d.giro === 999 ? '∞' : d.giro.toFixed(2) + 'x'}</td>
+                          <td className="px-5 py-4"><RecBadge r={d.recommendation} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </GlassPanel>
           </div>
         )}
 
-        {/* ════ BUSINESS SIMULATION ════ */}
+        {/* SIMULAÇÃO */}
         {tab === 'simulation' && summary && (
           <div className="space-y-6">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Business simulation</h1>
-              <p className="mt-1 text-sm text-zinc-500">Simule cenários de compra e veja o impacto financeiro antes de decidir</p>
-            </div>
+            <SectionTitle eyebrow="Scenario Lab" title="Simulação" subtitle="Ajuste orçamento, lead time e redução de capital parado antes de fechar o pedido." />
 
-            <div className="grid gap-6 lg:grid-cols-3">
-              {/* Controls */}
-              <div className="lg:col-span-1 space-y-3">
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 p-5">
-                  <div className="mb-4 flex items-center gap-2">
-                    <Icon name="sliders" className="w-4 h-4 text-emerald-400" />
-                    <p className="text-sm font-semibold">Variáveis da simulação</p>
-                  </div>
-                  <div className="space-y-5">
-                    <div>
-                      <div className="mb-1.5 flex items-center justify-between">
-                        <label className="text-xs text-zinc-400">Lead time (dias)</label>
-                        <span className="text-xs font-semibold text-emerald-400">{sim.leadTimeDias}d</span>
-                      </div>
-                      <input type="range" min={15} max={120} step={1} value={sim.leadTimeDias}
-                        onChange={e => setSim(s => ({ ...s, leadTimeDias: Number(e.target.value) }))}
-                        className="w-full accent-emerald-500" />
-                    </div>
-                    <div>
-                      <div className="mb-1.5 flex items-center justify-between">
-                        <label className="text-xs text-zinc-400">Estoque de segurança</label>
-                        <span className="text-xs font-semibold text-emerald-400">{sim.estoqueSegurancaDias}d</span>
-                      </div>
-                      <input type="range" min={0} max={45} step={1} value={sim.estoqueSegurancaDias}
-                        onChange={e => setSim(s => ({ ...s, estoqueSegurancaDias: Number(e.target.value) }))}
-                        className="w-full accent-emerald-500" />
-                    </div>
-                    <div>
-                      <div className="mb-1.5 flex items-center justify-between">
-                        <label className="text-xs text-zinc-400">Orçamento de compra</label>
-                        <span className="text-xs font-semibold text-emerald-400">
-                          {sim.orcamentoCompra >= 999000000 ? 'Ilimitado' : fmtBRLcompact(sim.orcamentoCompra)}
-                        </span>
-                      </div>
-                      <input type="range" min={10000} max={10000000} step={50000} value={Math.min(sim.orcamentoCompra, 10000000)}
-                        onChange={e => setSim(s => ({ ...s, orcamentoCompra: Number(e.target.value) }))}
-                        className="w-full accent-emerald-500" />
-                      <div className="mt-2 grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setSim(s => ({ ...s, orcamentoCompra: 999999999 }))}
-                          className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500/20"
-                        >
-                          Orçamento ilimitado
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSim(s => ({ ...s, orcamentoCompra: 500000 }))}
-                          className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[11px] font-semibold text-zinc-300 hover:border-zinc-600"
-                        >
-                          Voltar para R$ 500k
-                        </button>
-                      </div>
-                    </div>
-                    <div>
-                      <div className="mb-1.5 flex items-center justify-between">
-                        <label className="text-xs text-zinc-400">Meta redução parado</label>
-                        <span className="text-xs font-semibold text-emerald-400">{sim.metaReducaoParado}%</span>
-                      </div>
-                      <input type="range" min={0} max={100} step={5} value={sim.metaReducaoParado}
-                        onChange={e => setSim(s => ({ ...s, metaReducaoParado: Number(e.target.value) }))}
-                        className="w-full accent-emerald-500" />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Results */}
-              <div className="lg:col-span-2 space-y-3">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <KpiCard label="Compras dentro do orçamento" value={simulation.totalCompras} sub={`${fmtBRLcompact(simulation.orcamentoUsado)} de ${sim.orcamentoCompra >= 999000000 ? 'orçamento ilimitado' : fmtBRLcompact(sim.orcamentoCompra)}`} accent="success" icon="truck" />
-                  <KpiCard label="Críticos obrigatórios" value={simulation.compraObrigatoria.length} sub={`${fmtBRLcompact(simulation.compraObrigatoria.reduce((a,d)=>a+d.valorSugestaoCompra,0))} em compra crítica`} accent="danger" icon="alert" />
-                  <KpiCard label="Recompra evitada" value={fmtBRLcompact(simulation.valorEvitarRecompra)} sub={`${simulation.naoComprar.length} SKUs descartados`} accent="warning" icon="block" />
-                  <KpiCard label="Risco residual" value={fmtBRLcompact(simulation.riscoRupturaResidual)} sub={`${simulation.evitados.length} SKUs fora do orçamento`} accent="danger" icon="alert" />
-                </div>
-
-                {/* Net impact */}
-                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-6">
-                  <p className="mb-4 text-[10px] font-bold uppercase tracking-[0.15em] text-emerald-400">Impacto líquido projetado</p>
-                  <div className="grid gap-4 sm:grid-cols-3">
-                    <div>
-                      <p className="text-[11px] text-zinc-500">Saída de caixa (compras)</p>
-                      <p className="mt-1 text-lg font-semibold text-rose-400">- {fmtBRLcompact(simulation.orcamentoUsado)}</p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] text-zinc-500">Entrada de caixa (liberação)</p>
-                      <p className="mt-1 text-lg font-semibold text-emerald-400">+ {fmtBRLcompact(simulation.caixaLiberado + simulation.valorEvitarRecompra)}</p>
-                    </div>
-                    <div>
-                      <p className="text-[11px] text-zinc-500">Saldo no caixa</p>
-                      <p className={`mt-1 text-2xl font-bold ${simulation.caixaLiberado + simulation.valorEvitarRecompra - simulation.orcamentoUsado >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {simulation.caixaLiberado + simulation.valorEvitarRecompra - simulation.orcamentoUsado >= 0 ? '+ ' : '- '}
-                        {fmtBRLcompact(Math.abs(simulation.caixaLiberado + simulation.valorEvitarRecompra - simulation.orcamentoUsado))}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Mandatory critical list */}
-                {simulation.compraObrigatoria.length > 0 && (
-                  <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 overflow-hidden">
-                    <div className="border-b border-rose-500/20 bg-rose-500/10 px-5 py-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-semibold text-rose-100">Compra obrigatória, mesmo se ultrapassar orçamento</p>
-                          <p className="text-[11px] text-rose-200/70">SKUs zerados ou abaixo do mínimo com demanda ativa. Eles sempre aparecem aqui para não sumirem da decisão.</p>
-                        </div>
-                        <span className="rounded-full bg-rose-500/15 px-2.5 py-1 text-[10px] font-semibold text-rose-300">
-                          {simulation.compraObrigatoria.length} SKUs · {fmtBRLcompact(simulation.compraObrigatoria.reduce((a,d)=>a+d.valorSugestaoCompra,0))}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="max-h-72 overflow-y-auto">
-                      {simulation.compraObrigatoria.slice(0, 20).map((d, i) => (
-                        <div key={d.codigo} className="flex items-center justify-between gap-3 border-b border-rose-500/10 px-4 py-2.5 hover:bg-rose-500/5">
-                          <div className="flex items-center gap-3 min-w-0 flex-1">
-                            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-rose-500/15 text-[11px] font-bold text-rose-300">
-                              #{i + 1}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2">
-                                <ClassBadge c={d.classification} />
-                                <span className="font-mono text-[10px] text-zinc-600">{d.codigo}</span>
-                              </div>
-                              <p className="mt-0.5 truncate text-[13px] font-medium text-zinc-100">{d.produto}</p>
-                              <p className="text-[10px] text-zinc-500">{fmtNum(d.consumo)} un consumidas · {fmtNum(d.estoqueUtil)} em estoque</p>
-                            </div>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <p className="text-[10px] uppercase tracking-wider text-zinc-500">Comprar</p>
-                            <p className="text-[13px] font-bold text-emerald-400">{fmtNum(d.sugestaoCompra)} un</p>
-                            <p className="text-[10px] text-zinc-500">{fmtBRLcompact(d.valorSugestaoCompra)}</p>
-                          </div>
-                          <div className="hidden sm:block text-right shrink-0 min-w-[110px]">
-                            <p className="text-[10px] uppercase tracking-wider text-zinc-500">Receita em risco</p>
-                            <p className="text-[13px] font-bold text-rose-400">{fmtBRLcompact(d.receitaEmRisco)}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Buy list */}
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 overflow-hidden">
-                  <div className="border-b border-zinc-800 bg-zinc-900/50 px-5 py-3">
-                    <p className="text-sm font-semibold">Recomendado comprar dentro do orçamento</p>
-                    <p className="text-[11px] text-zinc-500">Algoritmo prioriza receita em risco e evita ruptura</p>
-                  </div>
-                  <div className="max-h-80 overflow-y-auto">
-                    {simulation.compradosDentroOrcamento.slice(0, 30).map(d => (
-                      <div key={d.codigo} className="flex items-center justify-between gap-3 border-b border-zinc-800 px-4 py-2.5 hover:bg-zinc-900/30">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <ClassBadge c={d.classification} />
-                            <span className="font-mono text-[10px] text-zinc-600">{d.codigo}</span>
-                          </div>
-                          <p className="mt-0.5 truncate text-[13px]">{d.produto}</p>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <p className="text-[13px] font-semibold text-emerald-400">{fmtNum(d.sugestaoCompra)} un</p>
-                          <p className="text-[10px] text-zinc-500">{fmtBRL(d.valorSugestaoCompra)}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {simulation.evitados.length > 0 && (
-                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-5">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Icon name="alert" className="w-4 h-4 text-amber-400" />
-                      <p className="text-sm font-semibold text-amber-200">
-                        Atenção: {simulation.evitados.length} SKUs ficaram fora do orçamento
-                        {simulation.criticosForaOrcamento.length > 0 ? ` · ${simulation.criticosForaOrcamento.length} críticos` : ''}
-                      </p>
-                    </div>
-                    <p className="text-xs text-amber-200/70">
-                      Receita em risco residual: {fmtBRLcompact(simulation.riscoRupturaResidual)}.
-                      Considere aumentar o orçamento em {fmtBRLcompact(simulation.evitados.reduce((a,d)=>a+d.valorSugestaoCompra,0))} para cobrir todos os SKUs prioritários.
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ════ INTEGRAÇÕES ════ */}
-        {tab === 'integrations' && (
-          <div className="space-y-6">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-400">Data Integration Hub</p>
-                <h1 className="mt-2 text-2xl font-semibold tracking-tight">Integrações operacionais</h1>
-                <p className="mt-1 max-w-3xl text-sm text-zinc-500">
-                  Conecte vendas, estoque e histórico para transformar o MVP em um motor real de decisão de compra, caixa e ruptura.
-                </p>
-              </div>
-              <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-medium text-emerald-400">
-                MVP preparado para API
-              </span>
-            </div>
-
-            <div className="grid gap-4 lg:grid-cols-3">
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
-                <div className="mb-4 flex items-start justify-between gap-3">
+            <div className="grid gap-6 xl:grid-cols-[0.85fr_1.15fr]">
+              <GlassPanel className="p-6">
+                <div className="flex items-center justify-between gap-4">
                   <div>
-                    <h2 className="text-base font-semibold">WooCommerce</h2>
-                    <p className="mt-1 text-xs font-medium text-emerald-400">Pronto para conectar</p>
+                    <p className="text-lg font-semibold text-slate-900">Variáveis da simulação</p>
+                    <p className="mt-1 text-sm text-slate-500">Veja o impacto financeiro em tempo real.</p>
                   </div>
-                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
-                    <Icon name="cash" />
+                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+                    <Icon name="sliders" className="h-5 w-5" />
                   </div>
                 </div>
 
-                <p className="text-sm leading-6 text-zinc-500">
-                  Fonte de pedidos, SKUs vendidos, receita, preço médio, datas de compra e velocidade de venda.
-                </p>
+                <div className="mt-7 space-y-7">
+                  <SliderControl label="Lead time" value={sim.leadTimeDias} min={15} max={120} suffix="d" onChange={value => setSim(s => ({ ...s, leadTimeDias: value }))} />
+                  <SliderControl label="Estoque de segurança" value={sim.estoqueSegurancaDias} min={0} max={45} suffix="d" onChange={value => setSim(s => ({ ...s, estoqueSegurancaDias: value }))} />
+                  <div>
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <label className="text-sm font-medium text-slate-600">Orçamento de compra</label>
+                      <span className="rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">
+                        {sim.orcamentoCompra >= 999000000 ? 'Ilimitado' : fmtBRLcompact(sim.orcamentoCompra)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={10000}
+                      max={10000000}
+                      step={50000}
+                      value={Math.min(sim.orcamentoCompra, 10000000)}
+                      onChange={e => setSim(s => ({ ...s, orcamentoCompra: Number(e.target.value) }))}
+                      className="h-2 w-full cursor-pointer appearance-none rounded-full bg-slate-100 accent-emerald-400"
+                    />
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button onClick={() => setSim(s => ({ ...s, orcamentoCompra: 999999999 }))} className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 transition hover:bg-emerald-100">
+                        Orçamento ilimitado
+                      </button>
+                      <button onClick={() => setSim(s => ({ ...s, orcamentoCompra: 500000 }))} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50">
+                        R$ 500k
+                      </button>
+                    </div>
+                  </div>
+                  <SliderControl label="Meta de redução de parado" value={sim.metaReducaoParado} min={0} max={100} step={5} suffix="%" onChange={value => setSim(s => ({ ...s, metaReducaoParado: value }))} />
+                </div>
+              </GlassPanel>
 
-                <div className="mt-4 grid gap-2 text-xs text-zinc-400">
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Pedidos reais e status de pagamento</div>
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Demanda por SKU e cor</div>
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Receita, ticket e margem estimada</div>
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Previsão de ruptura baseada em vendas</div>
+              <div className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <KpiCard label="Compra aprovada" value={simulation.totalCompras} sub={`${fmtBRLcompact(simulation.orcamentoUsado)} usado`} tone="emerald" icon="truck" />
+                  <KpiCard label="Compra obrigatória" value={simulation.compraObrigatoria.length} sub={`${fmtBRLcompact(simulation.compraObrigatoria.reduce((a, d) => a + d.valorSugestaoCompra, 0))} em críticos`} tone="rose" icon="alert" />
+                  <KpiCard label="Recompra evitada" value={fmtBRLcompact(simulation.valorEvitarRecompra)} sub={`${simulation.naoComprar.length} SKUs descartados`} tone="amber" icon="block" />
+                  <KpiCard label="Risco residual" value={fmtBRLcompact(simulation.riscoRupturaResidual)} sub={`${simulation.evitados.length} SKUs fora do orçamento`} tone="rose" icon="shield" />
                 </div>
 
-                <button
-                  onClick={testWooCommerceConnection}
-                  disabled={wcLoading}
-                  className="mt-5 w-full rounded-md bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {wcLoading ? 'Testando conexão...' : 'Testar conexão WooCommerce'}
-                </button>
-
-                {wcResult && (
-                  <div className="mt-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3">
-                    <p className="text-xs font-semibold text-emerald-300">Conectado com sucesso</p>
-                    <p className="mt-1 text-[11px] text-zinc-400">
-                      Pedidos encontrados: {wcResult.count ?? wcResult.orders?.length ?? 0}
+                <GlassPanel className="overflow-hidden border-emerald-200 p-6">
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-emerald-700">Impacto líquido projetado</p>
+                      <p className="mt-2 text-sm text-slate-500">Compra recomendada versus caixa liberável e recompra evitada.</p>
+                    </div>
+                    <p className={cn('text-3xl font-black tracking-tight', simulation.saldoCaixa >= 0 ? 'text-emerald-700' : 'text-rose-700')}>
+                      {simulation.saldoCaixa >= 0 ? '+' : '-'} {fmtBRLcompact(Math.abs(simulation.saldoCaixa))}
                     </p>
-                    <p className="mt-1 text-[11px] text-zinc-500">
-                      Última sincronização: {new Date().toLocaleString('pt-BR')}
-                    </p>
+                  </div>
+                  <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-xl border border-rose-100 bg-rose-50 p-4">
+                      <p className="text-xs text-slate-500">Saída de caixa</p>
+                      <p className="mt-1 text-lg font-black text-rose-700">- {fmtBRLcompact(simulation.orcamentoUsado)}</p>
+                    </div>
+                    <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4">
+                      <p className="text-xs text-slate-500">Liberação + recompra evitada</p>
+                      <p className="mt-1 text-lg font-black text-emerald-700">+ {fmtBRLcompact(simulation.caixaLiberado + simulation.valorEvitarRecompra)}</p>
+                    </div>
+                    <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
+                      <p className="text-xs text-slate-500">Orçamento</p>
+                      <p className="mt-1 text-lg font-black text-sky-700">{sim.orcamentoCompra >= 999000000 ? 'Ilimitado' : fmtBRLcompact(sim.orcamentoCompra)}</p>
+                    </div>
+                  </div>
+                </GlassPanel>
+              </div>
+            </div>
 
-                    {Array.isArray(wcResult.orders) && wcResult.orders.length > 0 && (
-                      <div className="mt-3 space-y-1.5">
-                        {wcResult.orders.slice(0, 3).map((order: any) => (
-                          <div key={order.id} className="rounded-md border border-emerald-500/20 bg-zinc-950/40 px-2 py-1.5 text-[11px] text-zinc-300">
-                            Pedido #{order.id} · {order.status} · R$ {order.total}
+            {simulation.compraObrigatoria.length > 0 && (
+              <GlassPanel className="overflow-hidden border-rose-200">
+                <div className="border-b border-rose-100 bg-rose-50 p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-base font-semibold text-rose-700">Compra obrigatória</p>
+                      <p className="mt-1 text-sm text-rose-700/65">SKUs zerados ou abaixo do mínimo com demanda ativa. Não devem sumir da decisão.</p>
+                    </div>
+                    <span className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-black text-rose-700">
+                      {simulation.compraObrigatoria.length} SKUs · {fmtBRLcompact(simulation.compraObrigatoria.reduce((a, d) => a + d.valorSugestaoCompra, 0))}
+                    </span>
+                  </div>
+                </div>
+                <div className="max-h-[360px] overflow-y-auto">
+                  {simulation.compraObrigatoria.slice(0, 30).map((d, i) => (
+                    <SkuCompactRow
+                      key={d.codigo}
+                      sku={d}
+                      index={i}
+                      right={
+                        <div className="grid shrink-0 grid-cols-2 gap-3 text-right sm:min-w-[280px]">
+                          <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
+                            <p className="text-[10px] uppercase tracking-[0.16em] text-emerald-700/70">Comprar</p>
+                            <p className="mt-1 font-black text-emerald-700">{fmtNum(d.sugestaoCompra)} un</p>
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {wcError && (
-                  <div className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3">
-                    <p className="text-xs font-semibold text-rose-300">Erro na conexão</p>
-                    <p className="mt-1 text-[11px] text-zinc-400">{wcError}</p>
-                    <p className="mt-1 text-[11px] text-zinc-500">
-                      Verifique se WC_STORE_URL, WC_CONSUMER_KEY e WC_CONSUMER_SECRET estão configuradas na Vercel.
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
-                <div className="mb-4 flex items-start justify-between gap-3">
-                  <div>
-                    <h2 className="text-base font-semibold">SANCO / Escalasoft</h2>
-                    <p className="mt-1 text-xs font-medium text-amber-400">Em validação</p>
-                  </div>
-                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/10 text-amber-400">
-                    <Icon name="truck" />
-                  </div>
+                          <div className="hidden rounded-xl border border-rose-100 bg-rose-50 p-3 sm:block">
+                            <p className="text-[10px] uppercase tracking-[0.16em] text-rose-700/70">Risco</p>
+                            <p className="mt-1 font-black text-rose-700">{fmtBRLcompact(d.receitaEmRisco)}</p>
+                          </div>
+                        </div>
+                      }
+                    />
+                  ))}
                 </div>
-
-                <p className="text-sm leading-6 text-zinc-500">
-                  Fonte de estoque, movimentação, permanência, entrada e saída de mercadoria.
-                </p>
-
-                <div className="mt-4 grid gap-2 text-xs text-zinc-400">
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Estoque sempre atualizado</div>
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Movimentação automática</div>
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Permanência real por SKU</div>
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Alertas em tempo real</div>
-                </div>
-
-                <button
-                  onClick={testSancoConnection}
-                  className="mt-5 w-full rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-800"
-                >
-                  Testar API SANCO
-                </button>
-
-                <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
-                  <p className="text-[11px] leading-5 text-zinc-400">{sancoStatus}</p>
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5">
-                <div className="mb-4 flex items-start justify-between gap-3">
-                  <div>
-                    <h2 className="text-base font-semibold">CSV Manual</h2>
-                    <p className="mt-1 text-xs font-medium text-emerald-400">Ativo no MVP</p>
-                  </div>
-                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10 text-blue-400">
-                    <Icon name="upload" />
-                  </div>
-                </div>
-
-                <p className="text-sm leading-6 text-zinc-500">
-                  Fallback seguro para importar relatórios atuais da SANCO enquanto as APIs são validadas.
-                </p>
-
-                <div className="mt-4 grid gap-2 text-xs text-zinc-400">
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Estoque atual</div>
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Maior movimentação</div>
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Maior permanência</div>
-                  <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2">Análise instantânea</div>
-                </div>
-
-                <button
-                  onClick={() => setShowImport(true)}
-                  className="mt-5 w-full rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs font-semibold text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-800"
-                >
-                  Importar CSV
-                </button>
-
-                <div className="mt-4 rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
-                  <p className="text-[11px] leading-5 text-zinc-400">
-                    O CSV mantém o MVP funcional mesmo sem depender das APIs no dia da apresentação.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 p-6">
-              <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-500">Arquitetura de dados</p>
-
-              <div className="mt-5 grid gap-3 md:grid-cols-4">
-                <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">
-                  <p className="text-sm font-semibold text-zinc-100">WooCommerce</p>
-                  <p className="mt-1 text-xs text-zinc-500">Motor de demanda</p>
-                </div>
-                <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">
-                  <p className="text-sm font-semibold text-zinc-100">SANCO / Escalasoft</p>
-                  <p className="mt-1 text-xs text-zinc-500">Motor de estoque</p>
-                </div>
-                <div className="rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">
-                  <p className="text-sm font-semibold text-zinc-100">Neon / Postgres</p>
-                  <p className="mt-1 text-xs text-zinc-500">Histórico e inteligência</p>
-                </div>
-                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
-                  <p className="text-sm font-semibold text-emerald-300">STL Business Intelligence</p>
-                  <p className="mt-1 text-xs text-zinc-400">Compra, caixa e ruptura</p>
-                </div>
-              </div>
-
-              <div className="mt-5 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
-                <p className="text-sm font-medium text-zinc-200">Mensagem para o hackathon</p>
-                <p className="mt-2 text-sm leading-6 text-zinc-500">
-                  Hoje o MVP funciona por CSV. A arquitetura já está preparada para substituir upload manual por integrações automáticas:
-                  WooCommerce alimenta demanda e receita, SANCO/Escalasoft alimenta estoque e movimentação, Neon armazena histórico e o
-                  STL Business Stock Intelligence transforma tudo em decisão financeira.
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-      </main>
-
-      <div className="fixed bottom-5 right-5 z-50">
-        {aiOpen && (
-          <div className="mb-3 w-[390px] max-w-[calc(100vw-40px)] rounded-2xl border border-zinc-800 bg-zinc-950 p-4 shadow-2xl">
-            <div className="mb-3 flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-zinc-100">Copiloto IA</p>
-                <p className="text-xs text-zinc-500">Pergunte sobre estoque, ruptura, compra e caixa.</p>
-              </div>
-              <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-400">AI</span>
-            </div>
-
-            <div className="mb-3 flex flex-wrap gap-2">
-              {[
-                'Quais filamentos têm menos de 5 unidades?',
-                'O que devo importar primeiro?',
-                'Quais produtos estão parados?',
-              ].map((q) => (
-                <button
-                  key={q}
-                  onClick={() => askAI(q)}
-                  disabled={aiLoading}
-                  className="rounded-full border border-zinc-700 bg-zinc-900 px-3 py-1 text-[10px] text-zinc-400 transition hover:border-emerald-500/50 hover:text-emerald-300 disabled:opacity-60"
-                >
-                  {q}
-                </button>
-              ))}
-            </div>
-
-            <textarea
-              value={aiQuestion}
-              onChange={(e) => setAiQuestion(e.target.value)}
-              placeholder="Ex: quanto temos de filamento PLA Branco?"
-              className="min-h-[92px] w-full rounded-xl border border-zinc-800 bg-zinc-900 p-3 text-sm text-zinc-100 outline-none focus:border-emerald-500"
-            />
-
-            <button
-              onClick={() => askAI()}
-              disabled={aiLoading || !aiQuestion.trim()}
-              className="mt-3 w-full rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {aiLoading ? 'Analisando...' : 'Perguntar'}
-            </button>
-
-            {aiError && (
-              <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs leading-5 text-rose-300">
-                {aiError}
-              </div>
+              </GlassPanel>
             )}
 
-            {aiAnswer && (
-              <div className="mt-3 max-h-[340px] overflow-y-auto rounded-2xl border border-emerald-500/30 bg-gradient-to-b from-emerald-500/10 via-zinc-950 to-zinc-950 p-4 text-sm leading-relaxed text-zinc-100 shadow-inner">
-                <div className="mb-3 flex items-center gap-2 border-b border-emerald-500/20 pb-3">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-xs font-black text-zinc-950">
-                    AI
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold text-emerald-300">Análise do Copiloto</p>
-                    <p className="text-[11px] text-zinc-500">Baseado nos dados atuais do dashboard</p>
+            <GlassPanel className="overflow-hidden">
+              <div className="border-b border-slate-200 p-5">
+                <p className="text-base font-semibold text-slate-900">Recomendado comprar dentro do orçamento</p>
+                <p className="mt-1 text-sm text-slate-500">Priorização por score de urgência e risco financeiro.</p>
+              </div>
+              <div className="max-h-[420px] overflow-y-auto">
+                {simulation.compradosDentroOrcamento.length === 0 ? (
+                  <EmptyState title="Nenhum SKU dentro do orçamento" subtitle="Aumente o orçamento ou use orçamento ilimitado para visualizar o pedido completo." icon="sliders" />
+                ) : simulation.compradosDentroOrcamento.slice(0, 45).map((d, i) => (
+                  <SkuCompactRow
+                    key={d.codigo}
+                    sku={d}
+                    index={i}
+                    right={
+                      <div className="shrink-0 text-right">
+                        <p className="text-sm font-black text-emerald-700">{fmtNum(d.sugestaoCompra)} un</p>
+                        <p className="text-xs text-slate-500">{fmtBRL(d.valorSugestaoCompra)}</p>
+                      </div>
+                    }
+                  />
+                ))}
+              </div>
+            </GlassPanel>
+
+            {simulation.evitados.length > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+                <div className="flex items-start gap-3">
+                  <Icon name="alert" className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" />
+                  <div>
+                    <p className="font-semibold text-amber-700">
+                      {simulation.evitados.length} SKUs ficaram fora do orçamento
+                      {simulation.criticosForaOrcamento.length > 0 ? ` · ${simulation.criticosForaOrcamento.length} críticos` : ''}
+                    </p>
+                    <p className="mt-1 text-sm leading-6 text-amber-700/70">
+                      Receita em risco residual: {fmtBRLcompact(simulation.riscoRupturaResidual)}. Para cobrir todos os SKUs prioritários, considere adicionar {fmtBRLcompact(simulation.evitados.reduce((a, d) => a + d.valorSugestaoCompra, 0))}.
+                    </p>
                   </div>
                 </div>
+              </div>
+            )}
+          </div>
+        )}
 
-                <div className="rounded-xl border border-zinc-800/80 bg-zinc-950/70 p-3">
-                  <div className="whitespace-pre-wrap text-[13px] leading-6 text-zinc-200">
+        {/* INTEGRAÇÕES */}
+        {tab === 'integrations' && (
+          <div className="space-y-6">
+            <SectionTitle
+              eyebrow="Data Integration Hub"
+              title="Integrações operacionais"
+              subtitle="WooCommerce alimenta demanda, SANCO CSV alimenta estoque do dia, OpenAI transforma contexto em decisão e a próxima fase prepara API SANCO."
+              right={<StatusPill label="MVP preparado para API" tone="emerald" pulse />}
+            />
+
+            <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+              <IntegrationCard title="WooCommerce" status="Demanda real" icon="store" tone="emerald" description="Pedidos reais, SKUs vendidos, receita, velocidade de venda e status válidos dos últimos 90 dias.">
+                <div className="space-y-3">
+                  <button onClick={testWooCommerceConnection} disabled={wcLoading} className="w-full rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
+                    {wcLoading ? 'Testando conexão...' : 'Testar WooCommerce'}
+                  </button>
+                  {wcResult && (
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-700/80">
+                      <p className="font-bold text-emerald-700">Conectado com sucesso</p>
+                      <p className="mt-1">Pedidos encontrados: {wcResult.count ?? wcResult.orders?.length ?? 0}</p>
+                      {Array.isArray(wcResult.orders) && wcResult.orders.length > 0 && (
+                        <div className="mt-2 space-y-1">
+                          {wcResult.orders.slice(0, 3).map((order: any) => (
+                            <div key={order.id} className="rounded-xl border border-slate-200 bg-slate-50 px-2 py-1.5 text-slate-600">Pedido #{order.id} · {order.status} · R$ {order.total}</div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {wcError && (
+                    <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs leading-5 text-rose-700/80">
+                      <p className="font-bold text-rose-700">Erro na conexão</p>
+                      <p className="mt-1">{wcError}</p>
+                      <p className="mt-1 text-rose-700/60">Verifique WC_STORE_URL, WC_CONSUMER_KEY e WC_CONSUMER_SECRET.</p>
+                    </div>
+                  )}
+                </div>
+              </IntegrationCard>
+
+              <IntegrationCard title="SANCO CSV" status="Estoque oficial do dia" icon="file" tone="cyan" description="Upload manual do CSV exportado da SANCO. É a fonte oficial do saldo atual no MVP.">
+                <button onClick={() => setShowImport(true)} className="w-full rounded-xl border border-sky-400/25 bg-sky-500/10 px-4 py-3 text-sm font-black text-sky-700 transition hover:bg-sky-500/20">
+                  Importar CSV SANCO
+                </button>
+                <p className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-500">Não depende de CSV antigo de consumo ou cobertura. Consumo vem do WooCommerce.</p>
+              </IntegrationCard>
+
+              <IntegrationCard title="OpenAI" status="Copiloto operacional" icon="brain" tone="violet" description="Recebe resumo, parâmetros, simulação e SKUs para responder perguntas de compra, ruptura e caixa.">
+                <button onClick={() => setAiOpen(true)} className="w-full rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-black text-violet-700 transition hover:bg-violet-100">
+                  Abrir Copiloto IA
+                </button>
+                <div className="mt-3 grid gap-2 text-xs text-slate-500">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">Perguntas sobre SKUs críticos</div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">Sugestão de importação</div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">Produtos parados e capital liberável</div>
+                </div>
+              </IntegrationCard>
+
+              <IntegrationCard title="Próxima fase API SANCO" status="Preparada" icon="plug" tone="amber" description="Estrutura pronta para trocar upload por sincronização automática quando endpoint e credenciais forem validados.">
+                <button onClick={testSancoConnection} className="w-full rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-black text-amber-700 transition hover:bg-amber-100">
+                  Testar estrutura SANCO
+                </button>
+                <p className="mt-3 rounded-xl border border-amber-100 bg-amber-50 p-3 text-xs leading-5 text-amber-700/70">{sancoStatus}</p>
+              </IntegrationCard>
+            </div>
+
+            <GlassPanel className="p-6">
+              <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">Arquitetura de dados</p>
+              <div className="mt-5 grid gap-3 md:grid-cols-4">
+                {[
+                  ['WooCommerce', 'Motor de demanda', 'store', 'emerald' as Tone],
+                  ['SANCO CSV', 'Motor de estoque', 'file', 'cyan' as Tone],
+                  ['OpenAI', 'Motor de decisão conversacional', 'brain', 'violet' as Tone],
+                  ['STL Intelligence', 'Compra, caixa e ruptura', 'bolt', 'emerald' as Tone],
+                ].map(([title, desc, icon, tone]) => (
+                  <div key={title as string} className={cn('rounded-xl border bg-slate-50 p-5', TONE_STYLES[tone as Tone].border)}>
+                    <div className={cn('flex h-10 w-10 items-center justify-center rounded-xl', TONE_STYLES[tone as Tone].icon)}><Icon name={icon as string} className="h-4 w-4" /></div>
+                    <p className="mt-4 text-sm font-semibold text-slate-900">{title}</p>
+                    <p className="mt-1 text-xs text-slate-500">{desc}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-5">
+                <p className="text-sm font-semibold text-slate-900">Mensagem operacional</p>
+                <p className="mt-2 text-sm leading-6 text-slate-500">
+                  Hoje o MVP é funcional com CSV SANCO + WooCommerce + OpenAI. A evolução natural é automatizar a SANCO por API, manter histórico em banco e transformar o dashboard em rotina diária de compra, caixa e ruptura.
+                </p>
+              </div>
+            </GlassPanel>
+          </div>
+        )}
+      </main>
+
+      {/* AI COPILOT */}
+      <div className="fixed bottom-5 right-5 z-50 flex max-w-[calc(100vw-40px)] flex-col items-end">
+        {aiOpen && (
+          <GlassPanel className="mb-3 flex max-h-[calc(100vh-120px)] w-[440px] max-w-full flex-col overflow-hidden border-violet-200">
+            <div className="border-b border-slate-200 bg-violet-50 p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-50 text-violet-700 ring-1 ring-violet-100"><Icon name="sparkles" className="h-4 w-4" /></div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">Copiloto IA</p>
+                      <p className="text-xs text-slate-500">Compra, ruptura, estoque e caixa.</p>
+                    </div>
+                  </div>
+                </div>
+                <button onClick={() => setAiOpen(false)} className="rounded-full border border-slate-200 bg-white p-2 text-slate-500 transition hover:text-slate-900"><Icon name="x" className="h-4 w-4" /></button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5">
+              <div className="mb-4 flex flex-wrap gap-2">
+                {[
+                  'Quais filamentos têm menos de 5 unidades?',
+                  'O que devo importar primeiro?',
+                  'Quais produtos estão parados?',
+                  'Quanto de receita está em risco?',
+                ].map((q) => (
+                  <button
+                    key={q}
+                    onClick={() => askAI(q)}
+                    disabled={aiLoading}
+                    className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-semibold text-slate-500 transition hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700 disabled:opacity-60"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+
+              <textarea
+                value={aiQuestion}
+                onChange={(e) => setAiQuestion(e.target.value)}
+                placeholder="Ex: com R$ 500 mil, o que compro primeiro e o que devo pausar?"
+                className="min-h-[112px] w-full resize-none rounded-xl border border-slate-200 bg-white p-4 text-sm leading-6 text-slate-900 outline-none transition placeholder:text-slate-500 focus:border-violet-200 focus:bg-white"
+              />
+
+              <button
+                onClick={() => askAI()}
+                disabled={aiLoading || !aiQuestion.trim()}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {aiLoading ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : <Icon name="sparkles" className="h-4 w-4" />}
+                {aiLoading ? 'Analisando dados...' : 'Perguntar ao Copiloto'}
+              </button>
+
+              {aiError && (
+                <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm leading-6 text-rose-700">
+                  {aiError}
+                </div>
+              )}
+
+              {aiAnswer && (
+                <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="mb-3 flex items-center gap-3 border-b border-slate-200 pb-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-50 text-xs font-black text-violet-700 ring-1 ring-violet-100">AI</div>
+                    <div>
+                      <p className="text-sm font-semibold text-violet-700">Análise do Copiloto</p>
+                      <p className="text-xs text-slate-500">Baseada no contexto atual do dashboard</p>
+                    </div>
+                  </div>
+                  <div className="whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm leading-7 text-slate-700">
                     {aiAnswer}
                   </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          </GlassPanel>
         )}
 
         <button
-          onClick={() => setAiOpen((v) => !v)}
-          className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-zinc-950 shadow-lg transition hover:bg-emerald-400"
+          onClick={() => setAiOpen(v => !v)}
+          className="group inline-flex items-center gap-2 rounded-full bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-800"
         >
+          <Icon name={aiOpen ? 'x' : 'sparkles'} className="h-4 w-4" />
           {aiOpen ? 'Fechar IA' : 'Perguntar à IA'}
         </button>
       </div>
 
-      <footer className="border-t border-zinc-800 mt-16 py-6">
-        <div className="mx-auto max-w-screen-2xl px-6 lg:px-8 flex flex-wrap items-center justify-between gap-3 text-[11px] text-zinc-500">
-          <span>STL Business Stock Intelligence · MVP hackathon</span>
-          <span>Decisões financeiras claras a partir de dados dispersos</span>
+      <footer className="mt-16 border-t border-slate-200 bg-white py-6">
+        <div className="mx-auto flex max-w-screen-2xl flex-wrap items-center justify-between gap-3 px-4 text-xs text-slate-500 sm:px-6 lg:px-8">
+          <span>STL Business Stock Intelligence · MVP Hackathon</span>
+          <span>Venda real + estoque atual + IA operacional</span>
         </div>
       </footer>
     </div>

@@ -1675,7 +1675,7 @@ export default function Page() {
                 </div>
 
                 <button
-                  onClick={testWooCommerceConnection}
+                  onClick={testWooConnection}
                   disabled={wcLoading}
                   className="mt-5 w-full rounded-md bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
                 >

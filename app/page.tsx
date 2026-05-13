@@ -531,13 +531,19 @@ export default function Page() {
   const [classFilter, setClassFilter] = useState<Classification | 'all'>('all')
 
   const [sim, setSim] = useState<SimParams>({
-    leadTimeDias: 60, estoqueSegurancaDias: 15, orcamentoCompra: 100000, metaReducaoParado: 30,
+    leadTimeDias: 60, estoqueSegurancaDias: 15, orcamentoCompra: 999999999, metaReducaoParado: 30,
   })
 
   const [wcLoading, setWcLoading] = useState(false)
   const [wcResult, setWcResult] = useState<any>(null)
   const [wcError, setWcError] = useState('')
   const [sancoStatus, setSancoStatus] = useState('Integração preparada. Aguardando credenciais e endpoint final da Escalasoft.')
+
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiQuestion, setAiQuestion] = useState('')
+  const [aiAnswer, setAiAnswer] = useState('')
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState('')
 
   // Auto-load mock on mount
   useEffect(() => {
@@ -720,6 +726,14 @@ export default function Page() {
       }
     }
 
+    const compraObrigatoria = customData
+      .filter(d => d.classification === 'critico' && d.sugestaoCompra > 0)
+      .sort((a, b) => b.receitaEmRisco - a.receitaEmRisco)
+
+    const criticosForaOrcamento = evitados
+      .filter(d => d.classification === 'critico')
+      .sort((a, b) => b.receitaEmRisco - a.receitaEmRisco)
+
     const naoComprar = customData.filter(d => ['pausar', 'liquidar', 'descontinuar'].includes(d.recommendation))
     const valorEvitarRecompra = naoComprar.reduce((a, d) => a + (d.consumoDiario * sim.leadTimeDias * d.valorUnitario), 0)
 
@@ -730,10 +744,70 @@ export default function Page() {
     const riscoRupturaResidual = evitados.reduce((a, d) => a + d.receitaEmRisco, 0)
 
     return {
-      orcamentoUsado, compradosDentroOrcamento, evitados, naoComprar, valorEvitarRecompra,
-      caixaLiberado, riscoRupturaResidual, totalCompras: compradosDentroOrcamento.length,
+      orcamentoUsado, compradosDentroOrcamento, evitados, criticosForaOrcamento,
+      compraObrigatoria, naoComprar, valorEvitarRecompra, caixaLiberado,
+      riscoRupturaResidual, totalCompras: compradosDentroOrcamento.length,
     }
   }, [data, sim])
+
+  async function askAI(customQuestion?: string) {
+    const questionToSend = (customQuestion || aiQuestion).trim()
+    if (!questionToSend) return
+
+    setAiLoading(true)
+    setAiError('')
+    setAiAnswer('')
+    if (customQuestion) setAiQuestion(customQuestion)
+
+    try {
+      const context = {
+        summary,
+        parametros: params,
+        simulacao: {
+          leadTimeDias: sim.leadTimeDias,
+          estoqueSegurancaDias: sim.estoqueSegurancaDias,
+          orcamentoCompra: sim.orcamentoCompra >= 999000000 ? 'ilimitado' : sim.orcamentoCompra,
+          metaReducaoParado: sim.metaReducaoParado,
+        },
+        skus: data.slice(0, 150).map((d) => ({
+          codigo: d.codigo,
+          produto: d.produto,
+          estoqueUtil: d.estoqueUtil,
+          qtdDisponivel: d.qtdDisponivel,
+          reservaVirtual: d.reservaVirtual,
+          consumo: d.consumo,
+          consumoDiario: d.consumoDiario,
+          diasCobertura: d.diasCobertura,
+          classification: d.classification,
+          recommendation: d.recommendation,
+          receitaEmRisco: d.receitaEmRisco,
+          capitalParado: d.capitalParado,
+          sugestaoCompra: d.sugestaoCompra,
+          valorSugestaoCompra: d.valorSugestaoCompra,
+          scorePrioridade: d.scorePrioridade,
+          motivo: d.motivo,
+        })),
+      }
+
+      const response = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: questionToSend, context }),
+      })
+
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Erro ao consultar IA.')
+      }
+
+      setAiAnswer(result.answer || 'Sem resposta.')
+    } catch (error: any) {
+      setAiError(error?.message || 'Erro ao consultar IA.')
+    } finally {
+      setAiLoading(false)
+    }
+  }
 
   // ─── Tabs config ───
   const tabs: { id: Tab; label: string; icon: string; badge?: number }[] = [
@@ -1292,11 +1366,29 @@ export default function Page() {
                     <div>
                       <div className="mb-1.5 flex items-center justify-between">
                         <label className="text-xs text-zinc-400">Orçamento de compra</label>
-                        <span className="text-xs font-semibold text-emerald-400">{fmtBRLcompact(sim.orcamentoCompra)}</span>
+                        <span className="text-xs font-semibold text-emerald-400">
+                          {sim.orcamentoCompra >= 999000000 ? 'Ilimitado' : fmtBRLcompact(sim.orcamentoCompra)}
+                        </span>
                       </div>
-                      <input type="range" min={10000} max={500000} step={5000} value={sim.orcamentoCompra}
+                      <input type="range" min={10000} max={10000000} step={50000} value={Math.min(sim.orcamentoCompra, 10000000)}
                         onChange={e => setSim(s => ({ ...s, orcamentoCompra: Number(e.target.value) }))}
                         className="w-full accent-emerald-500" />
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSim(s => ({ ...s, orcamentoCompra: 999999999 }))}
+                          className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5 text-[11px] font-semibold text-emerald-400 hover:bg-emerald-500/20"
+                        >
+                          Orçamento ilimitado
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSim(s => ({ ...s, orcamentoCompra: 500000 }))}
+                          className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[11px] font-semibold text-zinc-300 hover:border-zinc-600"
+                        >
+                          Voltar para R$ 500k
+                        </button>
+                      </div>
                     </div>
                     <div>
                       <div className="mb-1.5 flex items-center justify-between">
@@ -1314,8 +1406,8 @@ export default function Page() {
               {/* Results */}
               <div className="lg:col-span-2 space-y-3">
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <KpiCard label="Compras dentro do orçamento" value={simulation.totalCompras} sub={`${fmtBRLcompact(simulation.orcamentoUsado)} de ${fmtBRLcompact(sim.orcamentoCompra)}`} accent="success" icon="truck" />
-                  <KpiCard label="Caixa liberado projetado" value={fmtBRLcompact(simulation.caixaLiberado)} sub={`Reduzindo ${sim.metaReducaoParado}% do parado`} accent="info" icon="bolt" />
+                  <KpiCard label="Compras dentro do orçamento" value={simulation.totalCompras} sub={`${fmtBRLcompact(simulation.orcamentoUsado)} de ${sim.orcamentoCompra >= 999000000 ? 'orçamento ilimitado' : fmtBRLcompact(sim.orcamentoCompra)}`} accent="success" icon="truck" />
+                  <KpiCard label="Críticos obrigatórios" value={simulation.compraObrigatoria.length} sub={`${fmtBRLcompact(simulation.compraObrigatoria.reduce((a,d)=>a+d.valorSugestaoCompra,0))} em compra crítica`} accent="danger" icon="alert" />
                   <KpiCard label="Recompra evitada" value={fmtBRLcompact(simulation.valorEvitarRecompra)} sub={`${simulation.naoComprar.length} SKUs descartados`} accent="warning" icon="block" />
                   <KpiCard label="Risco residual" value={fmtBRLcompact(simulation.riscoRupturaResidual)} sub={`${simulation.evitados.length} SKUs fora do orçamento`} accent="danger" icon="alert" />
                 </div>
@@ -1341,6 +1433,51 @@ export default function Page() {
                     </div>
                   </div>
                 </div>
+
+                {/* Mandatory critical list */}
+                {simulation.compraObrigatoria.length > 0 && (
+                  <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 overflow-hidden">
+                    <div className="border-b border-rose-500/20 bg-rose-500/10 px-5 py-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold text-rose-100">Compra obrigatória, mesmo se ultrapassar orçamento</p>
+                          <p className="text-[11px] text-rose-200/70">SKUs zerados ou abaixo do mínimo com demanda ativa. Eles sempre aparecem aqui para não sumirem da decisão.</p>
+                        </div>
+                        <span className="rounded-full bg-rose-500/15 px-2.5 py-1 text-[10px] font-semibold text-rose-300">
+                          {simulation.compraObrigatoria.length} SKUs · {fmtBRLcompact(simulation.compraObrigatoria.reduce((a,d)=>a+d.valorSugestaoCompra,0))}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="max-h-72 overflow-y-auto">
+                      {simulation.compraObrigatoria.slice(0, 20).map((d, i) => (
+                        <div key={d.codigo} className="flex items-center justify-between gap-3 border-b border-rose-500/10 px-4 py-2.5 hover:bg-rose-500/5">
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-rose-500/15 text-[11px] font-bold text-rose-300">
+                              #{i + 1}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <ClassBadge c={d.classification} />
+                                <span className="font-mono text-[10px] text-zinc-600">{d.codigo}</span>
+                              </div>
+                              <p className="mt-0.5 truncate text-[13px] font-medium text-zinc-100">{d.produto}</p>
+                              <p className="text-[10px] text-zinc-500">{fmtNum(d.consumo)} un consumidas · {fmtNum(d.estoqueUtil)} em estoque</p>
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="text-[10px] uppercase tracking-wider text-zinc-500">Comprar</p>
+                            <p className="text-[13px] font-bold text-emerald-400">{fmtNum(d.sugestaoCompra)} un</p>
+                            <p className="text-[10px] text-zinc-500">{fmtBRLcompact(d.valorSugestaoCompra)}</p>
+                          </div>
+                          <div className="hidden sm:block text-right shrink-0 min-w-[110px]">
+                            <p className="text-[10px] uppercase tracking-wider text-zinc-500">Receita em risco</p>
+                            <p className="text-[13px] font-bold text-rose-400">{fmtBRLcompact(d.receitaEmRisco)}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Buy list */}
                 <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 overflow-hidden">
@@ -1371,7 +1508,10 @@ export default function Page() {
                   <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-5">
                     <div className="flex items-center gap-2 mb-2">
                       <Icon name="alert" className="w-4 h-4 text-amber-400" />
-                      <p className="text-sm font-semibold text-amber-200">Atenção: {simulation.evitados.length} SKUs ficaram fora do orçamento</p>
+                      <p className="text-sm font-semibold text-amber-200">
+                        Atenção: {simulation.evitados.length} SKUs ficaram fora do orçamento
+                        {simulation.criticosForaOrcamento.length > 0 ? ` · ${simulation.criticosForaOrcamento.length} críticos` : ''}
+                      </p>
                     </div>
                     <p className="text-xs text-amber-200/70">
                       Receita em risco residual: {fmtBRLcompact(simulation.riscoRupturaResidual)}.
@@ -1570,6 +1710,85 @@ export default function Page() {
         )}
 
       </main>
+
+      <div className="fixed bottom-5 right-5 z-50">
+        {aiOpen && (
+          <div className="mb-3 w-[390px] max-w-[calc(100vw-40px)] rounded-2xl border border-zinc-800 bg-zinc-950 p-4 shadow-2xl">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-zinc-100">Copiloto IA</p>
+                <p className="text-xs text-zinc-500">Pergunte sobre estoque, ruptura, compra e caixa.</p>
+              </div>
+              <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-400">AI</span>
+            </div>
+
+            <div className="mb-3 flex flex-wrap gap-2">
+              {[
+                'Quais filamentos têm menos de 5 unidades?',
+                'O que devo importar primeiro?',
+                'Quais produtos estão parados?',
+              ].map((q) => (
+                <button
+                  key={q}
+                  onClick={() => askAI(q)}
+                  disabled={aiLoading}
+                  className="rounded-full border border-zinc-700 bg-zinc-900 px-3 py-1 text-[10px] text-zinc-400 transition hover:border-emerald-500/50 hover:text-emerald-300 disabled:opacity-60"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+
+            <textarea
+              value={aiQuestion}
+              onChange={(e) => setAiQuestion(e.target.value)}
+              placeholder="Ex: quanto temos de filamento PLA Branco?"
+              className="min-h-[92px] w-full rounded-xl border border-zinc-800 bg-zinc-900 p-3 text-sm text-zinc-100 outline-none focus:border-emerald-500"
+            />
+
+            <button
+              onClick={() => askAI()}
+              disabled={aiLoading || !aiQuestion.trim()}
+              className="mt-3 w-full rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {aiLoading ? 'Analisando...' : 'Perguntar'}
+            </button>
+
+            {aiError && (
+              <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs leading-5 text-rose-300">
+                {aiError}
+              </div>
+            )}
+
+            {aiAnswer && (
+              <div className="mt-3 max-h-[340px] overflow-y-auto rounded-2xl border border-emerald-500/30 bg-gradient-to-b from-emerald-500/10 via-zinc-950 to-zinc-950 p-4 text-sm leading-relaxed text-zinc-100 shadow-inner">
+                <div className="mb-3 flex items-center gap-2 border-b border-emerald-500/20 pb-3">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-xs font-black text-zinc-950">
+                    AI
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-emerald-300">Análise do Copiloto</p>
+                    <p className="text-[11px] text-zinc-500">Baseado nos dados atuais do dashboard</p>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-zinc-800/80 bg-zinc-950/70 p-3">
+                  <div className="whitespace-pre-wrap text-[13px] leading-6 text-zinc-200">
+                    {aiAnswer}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <button
+          onClick={() => setAiOpen((v) => !v)}
+          className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-zinc-950 shadow-lg transition hover:bg-emerald-400"
+        >
+          {aiOpen ? 'Fechar IA' : 'Perguntar à IA'}
+        </button>
+      </div>
 
       <footer className="border-t border-zinc-800 mt-16 py-6">
         <div className="mx-auto max-w-screen-2xl px-6 lg:px-8 flex flex-wrap items-center justify-between gap-3 text-[11px] text-zinc-500">

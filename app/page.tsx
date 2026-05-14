@@ -10,7 +10,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 // ─── TYPES ─────────────────────────────────────────────────────────────────
 
 type Classification = 'critico' | 'ruptura' | 'atencao' | 'saudavel' | 'excesso' | 'parado'
-type Tab = 'overview' | 'cash-leak' | 'revenue-risk' | 'import-ai' | 'not-buy' | 'simulation' | 'integrations'
+type Tab = 'overview' | 'current-stock' | 'cash-leak' | 'revenue-risk' | 'import-ai' | 'not-buy' | 'simulation' | 'integrations'
 type Recommendation = 'comprar-urgente' | 'comprar' | 'manter' | 'pausar' | 'promover' | 'liquidar' | 'descontinuar'
 type Tone = 'emerald' | 'rose' | 'violet' | 'cyan' | 'amber' | 'zinc' | 'blue'
 
@@ -30,6 +30,9 @@ interface SKU {
   valorEstoque: number
   consumo: number
   consumoDiario: number
+  demandaAteReposicao: number
+  unidadesQuePodePerder: number
+  estoqueIdeal: number
   diasCobertura: number
   giro: number
   classification: Classification
@@ -321,15 +324,17 @@ function buildMotivo(
   estoqueUtil: number,
   periodoDias: number,
   precoVendaFonte: 'woocommerce' | 'estimado',
+  demandaAteReposicao: number,
+  unidadesQuePodePerder: number,
 ): string {
-  const fontePreco = precoVendaFonte === 'woocommerce' ? 'preço médio real do WooCommerce' : 'preço estimado por custo + margem'
+  const fontePreco = precoVendaFonte === 'woocommerce' ? 'preço médio real do WooCommerce' : 'preço estimado normalizado por custo + margem'
 
   switch (c) {
     case 'critico':
       if (!isFinite(dias) || dias <= 0) {
-        return `Vendeu ${fmtNum(consumo)} un em ${periodoDias} dias, tem ${fmtNum(estoqueUtil)} em estoque e pode deixar de vender ${fmtBRLcompact(receitaEmRisco)} durante o lead time (${fontePreco}).`
+        return `Vendeu ${fmtNum(consumo)} un em ${periodoDias} dias. Até a reposição chegar, a demanda projetada é ${fmtNum(demandaAteReposicao)} un; com ${fmtNum(estoqueUtil)} em estoque, podemos perder ${fmtNum(unidadesQuePodePerder)} un = ${fmtBRLcompact(receitaEmRisco)} (${fontePreco}).`
       }
-      return `Vendeu ${fmtNum(consumo)} un em ${periodoDias} dias, cobertura de ${Math.round(dias)}d e risco de ${fmtBRLcompact(receitaEmRisco)} durante o lead time.`
+      return `Vendeu ${fmtNum(consumo)} un em ${periodoDias} dias. Demanda até reposição: ${fmtNum(demandaAteReposicao)} un; cobertura atual ${Math.round(dias)}d; possível perda: ${fmtNum(unidadesQuePodePerder)} un = ${fmtBRLcompact(receitaEmRisco)}.`
     case 'ruptura':
       return `Cobertura crítica de ${Math.round(dias)}d. Demanda real de ${fmtNum(consumo)} un em ${periodoDias} dias pode virar venda perdida.`
     case 'atencao':
@@ -416,9 +421,16 @@ function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, pa
     const margem = params.margemPadrao
 
     // Receita que podemos deixar de ganhar usa o preço médio real vendido no WooCommerce.
-    // Se a rota ainda não enviar receita por SKU, cai para uma estimativa explícita por custo + margem.
+    // Se a rota ainda não enviar receita por SKU, usa estimativa normalizada por custo + margem.
+    // A normalização evita distorções de alguns SKUs da SANCO e deixa filamentos similares com preço similar.
     const precoMedioVendaReal = consumo > 0 && receitaPeriodo > 0 ? receitaPeriodo / consumo : 0
-    const precoVendaEstimado = valorUnitario > 0 ? valorUnitario / (1 - margem) : 0
+    const precoVendaEstimadoSku = valorUnitario > 0 ? valorUnitario / (1 - margem) : 0
+    const precoVendaEstimadoPortfolio = valorUnitarioMedioEstoque > 0 ? valorUnitarioMedioEstoque / (1 - margem) : precoVendaEstimadoSku
+    const limiteInferiorPreco = precoVendaEstimadoPortfolio > 0 ? precoVendaEstimadoPortfolio * 0.70 : 0
+    const limiteSuperiorPreco = precoVendaEstimadoPortfolio > 0 ? precoVendaEstimadoPortfolio * 1.30 : Number.POSITIVE_INFINITY
+    const precoVendaEstimado = precoVendaEstimadoSku > 0
+      ? Math.min(Math.max(precoVendaEstimadoSku, limiteInferiorPreco), limiteSuperiorPreco)
+      : precoVendaEstimadoPortfolio
     const precoMedioVenda = precoMedioVendaReal > 0 ? precoMedioVendaReal : precoVendaEstimado
     const precoVendaFonte: 'woocommerce' | 'estimado' = precoMedioVendaReal > 0 ? 'woocommerce' : 'estimado'
     const precoVenda = precoMedioVenda
@@ -430,20 +442,19 @@ function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, pa
 
     const classification = classify(estoqueUtil, diasCobertura, consumo, semEstoqueEncontrado)
 
-    const estoqueNecessario = consumoDiario * (params.leadTimeDias + params.estoqueSegurancaDias)
-    const sugestaoCompra = Math.max(0, Math.ceil(estoqueNecessario - estoqueUtil))
+    const estoqueIdeal = consumoDiario * (params.leadTimeDias + params.estoqueSegurancaDias)
+    const sugestaoCompra = Math.max(0, Math.ceil(estoqueIdeal - estoqueUtil))
     const valorSugestaoCompra = sugestaoCompra * valorUnitario
 
-    // Receita perdida projetada: venda real dos últimos 90 dias + preço médio real vendido + lead time.
-    // Assim os SKUs com maior movimentação tendem a aparecer com maior risco financeiro quando o preço é similar.
-    const coberturaParaCalculo = consumoDiario > 0 ? Math.max(0, isFinite(diasCobertura) ? diasCobertura : params.leadTimeDias) : params.leadTimeDias
-    const diasSemEstoqueProjetado = consumoDiario > 0 ? Math.max(0, params.leadTimeDias - coberturaParaCalculo) : 0
-    const unidadesPerdidasProjetadas = consumoDiario * diasSemEstoqueProjetado
-    const receitaEmRisco = unidadesPerdidasProjetadas * precoMedioVenda
+    // Receita que pode ser perdida = preço do filamento x quantidade que podemos perder até a reposição chegar.
+    // Demanda até reposição usa somente lead time. Sugestão de compra usa lead time + segurança.
+    const demandaAteReposicao = consumoDiario * params.leadTimeDias
+    const unidadesQuePodePerder = Math.max(0, demandaAteReposicao - estoqueUtil)
+    const receitaEmRisco = unidadesQuePodePerder * precoMedioVenda
 
     // Caixa parado: estoque acima do necessário para cobrir lead time + segurança.
     // Se não vendeu nada no período, todo o estoque útil é tratado como capital parado.
-    const estoqueExcedente = consumo > 0 ? Math.max(0, estoqueUtil - estoqueNecessario) : estoqueUtil
+    const estoqueExcedente = consumo > 0 ? Math.max(0, estoqueUtil - estoqueIdeal) : estoqueUtil
     const capitalParado = estoqueExcedente * valorUnitario
     const recommendation = recommend(classification, { giro, valorEstoque: capitalParado || valorEstoque, consumo })
 
@@ -460,11 +471,12 @@ function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, pa
     else scorePrioridade = 5
     scorePrioridade = Math.min(100, Math.round(scorePrioridade))
 
-    const motivo = buildMotivo(classification, diasCobertura, capitalParado || valorEstoque, receitaEmRisco, consumo, estoqueUtil, params.periodoRelatorioDias, precoVendaFonte)
+    const motivo = buildMotivo(classification, diasCobertura, capitalParado || valorEstoque, receitaEmRisco, consumo, estoqueUtil, params.periodoRelatorioDias, precoVendaFonte, demandaAteReposicao, unidadesQuePodePerder)
 
     skus.push({
       codigo, produto, qtdDisponivel, qtdBloqueada, reservaVirtual, estoqueUtil,
       valorUnitario, precoVenda, precoMedioVenda, receitaPeriodo, precoVendaFonte, margem, valorEstoque, consumo, consumoDiario,
+      demandaAteReposicao, unidadesQuePodePerder, estoqueIdeal,
       diasCobertura, giro, classification, recommendation, sugestaoCompra,
       valorSugestaoCompra, receitaEmRisco, capitalParado, scorePrioridade,
       motivo, semEstoqueEncontrado,
@@ -980,6 +992,7 @@ export default function Page() {
   const [aiAnswer, setAiAnswer] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState('')
+  const [stockSearch, setStockSearch] = useState('')
 
   useEffect(() => {
     const result = processData(MOCK_STOCK, MOCK_CONSUMO, '', DEFAULT_PARAMS)
@@ -1003,6 +1016,10 @@ export default function Page() {
     const compraRecomendadaUn = data.reduce((a, d) => a + d.sugestaoCompra, 0)
     const skusComDemanda = data.filter(d => d.consumo > 0).length
     const caixaLiberavel = capitalParado * 0.6
+    const estoqueDisponivelTotal = data.reduce((a, d) => a + d.qtdDisponivel, 0)
+    const estoqueUtilTotal = data.reduce((a, d) => a + d.estoqueUtil, 0)
+    const estoqueBloqueadoTotal = data.reduce((a, d) => a + d.qtdBloqueada, 0)
+    const reservaVirtualTotal = data.reduce((a, d) => a + d.reservaVirtual, 0)
     return {
       totalSkus: data.length,
       criticos: data.filter(d => d.classification === 'critico').length,
@@ -1019,6 +1036,10 @@ export default function Page() {
       compraRecomendadaUn,
       skusComDemanda,
       caixaLiberavel,
+      estoqueDisponivelTotal,
+      estoqueUtilTotal,
+      estoqueBloqueadoTotal,
+      reservaVirtualTotal,
       pctParado: valorTotal > 0 ? (capitalParado / valorTotal) * 100 : 0,
       oportunidadeFinanceira: caixaLiberavel + receitaEmRisco,
     }
@@ -1036,6 +1057,20 @@ export default function Page() {
       )
       .slice(0, 5)
   }, [data])
+
+  const currentStockData = useMemo(() => {
+    const q = stockSearch.trim().toLowerCase()
+    return [...data]
+      .filter(d => {
+        if (!q) return true
+        return d.codigo.toLowerCase().includes(q) || d.produto.toLowerCase().includes(q)
+      })
+      .sort((a, b) =>
+        b.estoqueUtil - a.estoqueUtil ||
+        b.valorEstoque - a.valorEstoque ||
+        a.produto.localeCompare(b.produto)
+      )
+  }, [data, stockSearch])
 
   const cashLeakData = useMemo(() => {
     return [...data]
@@ -1070,7 +1105,18 @@ export default function Page() {
     const customData = data.map(d => {
       const estoqueNec = d.consumoDiario * (sim.leadTimeDias + sim.estoqueSegurancaDias)
       const sug = Math.max(0, Math.ceil(estoqueNec - d.estoqueUtil))
-      return { ...d, sugestaoCompra: sug, valorSugestaoCompra: sug * d.valorUnitario }
+      const demandaAteReposicao = d.consumoDiario * sim.leadTimeDias
+      const unidadesQuePodePerder = Math.max(0, demandaAteReposicao - d.estoqueUtil)
+      const receitaEmRisco = unidadesQuePodePerder * d.precoMedioVenda
+      return {
+        ...d,
+        estoqueIdeal: estoqueNec,
+        demandaAteReposicao,
+        unidadesQuePodePerder,
+        receitaEmRisco,
+        sugestaoCompra: sug,
+        valorSugestaoCompra: sug * d.valorUnitario,
+      }
     })
 
     const sorted = [...customData].sort((a, b) => b.scorePrioridade - a.scorePrioridade)
@@ -1302,6 +1348,9 @@ export default function Page() {
           reservaVirtual: d.reservaVirtual,
           consumo: d.consumo,
           consumoDiario: d.consumoDiario,
+          demandaAteReposicao: d.demandaAteReposicao,
+          unidadesQuePodePerder: d.unidadesQuePodePerder,
+          estoqueIdeal: d.estoqueIdeal,
           diasCobertura: d.diasCobertura,
           classification: d.classification,
           recommendation: d.recommendation,
@@ -1339,6 +1388,7 @@ export default function Page() {
 
   const tabs: { id: Tab; label: string; icon: string; badge?: number }[] = [
     { id: 'overview', label: 'Visão geral', icon: 'chart' },
+    { id: 'current-stock', label: 'Estoque atual', icon: 'database', badge: data.length },
     { id: 'cash-leak', label: 'Caixa parado', icon: 'cash', badge: summary ? summary.parado + summary.excesso : 0 },
     { id: 'revenue-risk', label: 'Receita que pode ser perdida', icon: 'alert', badge: summary ? summary.criticos + summary.ruptura : 0 },
     { id: 'import-ai', label: 'Pedido recomendado', icon: 'truck', badge: importOrderData.length },
@@ -1765,6 +1815,147 @@ export default function Page() {
           </div>
         )}
 
+        {/* ESTOQUE ATUAL */}
+        {tab === 'current-stock' && summary && (
+          <div className="space-y-6">
+            <SectionTitle
+              eyebrow="SANCO Stock View"
+              title="Estoque atual"
+              subtitle="Visão limpa do saldo importado da SANCO. Aqui você confere o que existe hoje, quanto está útil para venda e quanto está bloqueado ou reservado."
+              right={
+                <button onClick={() => exportCSV(currentStockData.map(d => ({
+                  Codigo: d.codigo,
+                  Produto: d.produto,
+                  QuantidadeDisponivelSANCO: d.qtdDisponivel,
+                  QuantidadeBloqueada: d.qtdBloqueada,
+                  ReservaVirtual: d.reservaVirtual,
+                  EstoqueUtil: d.estoqueUtil,
+                  ValorUnitarioSANCO: d.valorUnitario,
+                  ValorEstoqueUtil: d.valorEstoque,
+                  VendidosPeriodo: d.consumo,
+                  CoberturaDias: isFinite(d.diasCobertura) ? Math.round(d.diasCobertura) : '∞',
+                  Classificacao: CLASS_LABELS[d.classification],
+                  Recomendacao: REC_LABELS[d.recommendation],
+                })), 'estoque_atual_sanco.csv')} className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50">
+                  <Icon name="download" className="h-4 w-4" /> Exportar estoque
+                </button>
+              }
+            />
+
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <KpiCard label="SKUs no estoque" value={fmtNum(summary.totalSkus)} tone="cyan" icon="database" sub={estoqueSourceLabel} />
+              <KpiCard label="Estoque disponível" value={`${fmtNum(summary.estoqueDisponivelTotal)} un`} tone="emerald" icon="package" sub="Quantidade disponível informada pela SANCO" />
+              <KpiCard label="Estoque útil" value={`${fmtNum(summary.estoqueUtilTotal)} un`} tone="blue" icon="shield" sub="Disponível menos reservas, com regra de mínimo operacional" />
+              <KpiCard label="Valor em estoque" value={fmtBRLcompact(summary.valorTotal)} tone="violet" icon="cash" sub="Valor estimado do estoque útil" />
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-3">
+              <GlassPanel className="p-5">
+                <div className="flex items-start gap-4">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+                    <Icon name="package" className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">Saldo disponível</p>
+                    <p className="mt-1 text-2xl font-black text-emerald-700">{fmtNum(summary.estoqueDisponivelTotal)} un</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">Tudo que veio na coluna “Quantidade disponível” do CSV SANCO.</p>
+                  </div>
+                </div>
+              </GlassPanel>
+              <GlassPanel className="p-5">
+                <div className="flex items-start gap-4">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-50 text-amber-700 ring-1 ring-amber-100">
+                    <Icon name="shield" className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">Bloqueado + reserva</p>
+                    <p className="mt-1 text-2xl font-black text-amber-700">{fmtNum(summary.estoqueBloqueadoTotal + summary.reservaVirtualTotal)} un</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">Soma de quantidade bloqueada e reserva virtual, para separar saldo bruto de saldo realmente útil.</p>
+                  </div>
+                </div>
+              </GlassPanel>
+              <GlassPanel className="p-5">
+                <div className="flex items-start gap-4">
+                  <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sky-50 text-sky-700 ring-1 ring-sky-100">
+                    <Icon name="chart" className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">Com venda no período</p>
+                    <p className="mt-1 text-2xl font-black text-sky-700">{fmtNum(summary.skusComDemanda)} SKUs</p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">Produtos que têm demanda real no WooCommerce e aparecem na análise cruzada.</p>
+                  </div>
+                </div>
+              </GlassPanel>
+            </div>
+
+            <GlassPanel className="overflow-hidden">
+              <div className="flex flex-col gap-4 border-b border-slate-200 bg-slate-50 p-5 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <p className="text-base font-semibold text-slate-900">Lista de estoque SANCO</p>
+                  <p className="mt-1 text-sm text-slate-500">Pesquise por SKU ou produto para conferir saldo, valor, cobertura e recomendação.</p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <div className="relative">
+                    <input
+                      value={stockSearch}
+                      onChange={(e) => setStockSearch(e.target.value)}
+                      placeholder="Buscar SKU ou produto..."
+                      className="w-full rounded-full border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-sky-300 sm:w-72"
+                    />
+                  </div>
+                  {stockSearch && (
+                    <button onClick={() => setStockSearch('')} className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-500 transition hover:bg-slate-50">
+                      Limpar
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {currentStockData.length === 0 ? (
+                <EmptyState title="Nenhum SKU encontrado" subtitle="Tente buscar por outro código ou produto." icon="database" />
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-white">
+                      <tr>
+                        <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Produto</th>
+                        <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Status</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Disponível</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Bloqueado</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Reserva</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Útil</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Valor útil</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Vendidos 90d</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Cobertura</th>
+                        <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Ação</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {currentStockData.map((d) => (
+                        <tr key={d.codigo} className="transition hover:bg-slate-50">
+                          <td className="max-w-[320px] px-5 py-4">
+                            <p className="truncate font-semibold text-slate-900">{d.produto}</p>
+                            <p className="font-mono text-[10px] text-slate-500">{d.codigo}</p>
+                          </td>
+                          <td className="px-5 py-4"><ClassBadge c={d.classification} /></td>
+                          <td className="px-5 py-4 text-right font-semibold text-slate-700">{fmtNum(d.qtdDisponivel)}</td>
+                          <td className="px-5 py-4 text-right text-slate-500">{fmtNum(d.qtdBloqueada)}</td>
+                          <td className="px-5 py-4 text-right text-slate-500">{fmtNum(d.reservaVirtual)}</td>
+                          <td className="px-5 py-4 text-right font-black text-sky-700">{fmtNum(d.estoqueUtil)}</td>
+                          <td className="px-5 py-4 text-right font-semibold text-violet-700">{fmtBRL(d.valorEstoque)}</td>
+                          <td className="px-5 py-4 text-right text-slate-500">{fmtNum(d.consumo)}</td>
+                          <td className="px-5 py-4 text-right text-slate-500">{fmtDias(d.diasCobertura)}</td>
+                          <td className="px-5 py-4"><RecBadge r={d.recommendation} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </GlassPanel>
+          </div>
+        )}
+
         {/* CAIXA PARADO */}
         {tab === 'cash-leak' && summary && (
           <div className="space-y-6">
@@ -1774,9 +1965,15 @@ export default function Page() {
               subtitle="Produtos que prendem capital e reduzem a capacidade de compra dos itens que vendem."
               right={
                 <button onClick={() => exportCSV(cashLeakData.map(d => ({
-                  Codigo: d.codigo, Produto: d.produto, ValorParado: d.valorEstoque, EstoqueUtil: d.estoqueUtil,
-                  Consumo: d.consumo, Cobertura: isFinite(d.diasCobertura) ? Math.round(d.diasCobertura) : '∞',
-                  Recomendacao: REC_LABELS[d.recommendation], Motivo: d.motivo,
+                  Codigo: d.codigo,
+                  Produto: d.produto,
+                  ValorParado: d.valorEstoque,
+                  EstoqueUtil: d.estoqueUtil,
+                  VendidoPeriodo: d.consumo,
+                  DemandaMediaDia: d.consumoDiario,
+                  Cobertura: isFinite(d.diasCobertura) ? Math.round(d.diasCobertura) : '∞',
+                  Recomendacao: REC_LABELS[d.recommendation],
+                  Motivo: d.motivo,
                 })), 'caixa_parado.csv')} className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50">
                   <Icon name="download" className="h-4 w-4" /> Exportar CSV
                 </button>
@@ -1790,10 +1987,32 @@ export default function Page() {
               <KpiCard label="Caixa liberável" value={fmtBRLcompact(summary.caixaLiberavel)} tone="emerald" sub="Estimativa conservadora de 60%" icon="bolt" />
             </div>
 
+            <div className="grid gap-4 lg:grid-cols-[1fr_1fr]">
+              <div className="rounded-xl border border-violet-200 bg-violet-50 p-5 shadow-sm">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-violet-700 ring-1 ring-violet-100">
+                    <Icon name="cash" className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-violet-700">Como justificamos a cobertura?</p>
+                    <p className="mt-1 text-sm leading-6 text-violet-700/75">
+                      A cobertura compara <strong>estoque útil atual</strong> com a <strong>venda real dos últimos {params.periodoRelatorioDias} dias</strong>. Se vende pouco e tem muito estoque, o dinheiro fica parado.
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">Leitura prática</p>
+                <p className="mt-2 text-sm leading-6 text-slate-500">
+                  Exemplo: 700 unidades em estoque e 300 vendidas em {params.periodoRelatorioDias} dias geram uma cobertura aproximada de 210 dias. Essa visão mostra por que pausar compra ou promover o SKU libera caixa.
+                </p>
+              </div>
+            </div>
+
             <GlassPanel className="overflow-hidden">
               <div className="border-b border-slate-200 px-5 py-4">
                 <p className="text-sm font-semibold text-slate-900">Maiores travadores de capital</p>
-                <p className="mt-1 text-xs text-slate-500">Ordenado por valor de estoque travado.</p>
+                <p className="mt-1 text-xs text-slate-500">Ordenado por valor de estoque travado. Agora mostra também o vendido no período para justificar a cobertura.</p>
               </div>
               {cashLeakData.length === 0 ? (
                 <EmptyState title="Nenhum vazamento de caixa detectado" subtitle="Não há SKUs classificados como parado ou excesso." icon="check" />
@@ -1806,6 +2025,8 @@ export default function Page() {
                         <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Status</th>
                         <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Capital travado</th>
                         <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Estoque</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Vendido {params.periodoRelatorioDias}d</th>
+                        <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Demanda/dia</th>
                         <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Cobertura</th>
                         <th className="px-5 py-3 text-right text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Giro</th>
                         <th className="px-5 py-3 text-left text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Ação</th>
@@ -1821,6 +2042,8 @@ export default function Page() {
                           <td className="px-5 py-4"><ClassBadge c={d.classification} /></td>
                           <td className="px-5 py-4 text-right font-black text-violet-700">{fmtBRL(d.valorEstoque)}</td>
                           <td className="px-5 py-4 text-right text-slate-500">{fmtNum(d.estoqueUtil)} un</td>
+                          <td className="px-5 py-4 text-right font-semibold text-slate-700">{fmtNum(d.consumo)} un</td>
+                          <td className="px-5 py-4 text-right text-slate-500">{d.consumoDiario.toFixed(1)} un/dia</td>
                           <td className="px-5 py-4 text-right text-slate-500">{fmtDias(d.diasCobertura)}</td>
                           <td className="px-5 py-4 text-right text-slate-500">{d.giro === 999 ? '∞' : d.giro.toFixed(2) + 'x'}</td>
                           <td className="px-5 py-4"><RecBadge r={d.recommendation} /></td>
@@ -1855,9 +2078,17 @@ export default function Page() {
                     sku={d}
                     index={i}
                     right={
-                      <div className="grid shrink-0 grid-cols-2 gap-3 text-right sm:min-w-[340px]">
-                        <div className="hidden rounded-xl border border-rose-100 bg-rose-50 p-3 sm:block">
-                          <p className="text-[10px] uppercase tracking-[0.16em] text-rose-700/70">Receita que pode ser perdida</p>
+                      <div className="grid shrink-0 grid-cols-2 gap-3 text-right xl:min-w-[640px] xl:grid-cols-4">
+                        <div className="rounded-xl border border-sky-100 bg-sky-50 p-3">
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-sky-700/70">Demanda até reposição</p>
+                          <p className="mt-1 font-black text-sky-700">{fmtNum(d.demandaAteReposicao)} un</p>
+                        </div>
+                        <div className="rounded-xl border border-amber-100 bg-amber-50 p-3">
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-amber-700/70">Pode perder</p>
+                          <p className="mt-1 font-black text-amber-700">{fmtNum(d.unidadesQuePodePerder)} un</p>
+                        </div>
+                        <div className="rounded-xl border border-rose-100 bg-rose-50 p-3">
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-rose-700/70">Receita perdida</p>
                           <p className="mt-1 font-black text-rose-700">{fmtBRLcompact(d.receitaEmRisco)}</p>
                         </div>
                         <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
@@ -1879,11 +2110,15 @@ export default function Page() {
             <SectionTitle
               eyebrow="Purchase Intelligence"
               title="Pedido recomendado"
-              subtitle="Lista priorizada para compra com base em cobertura, consumo real, lead time e receita em risco."
+              subtitle="Lista priorizada por receita que pode ser perdida, demanda até reposição, cobertura e consumo real."
               right={
                 <button onClick={() => exportCSV(importOrderData.map(d => ({
                   Codigo: d.codigo, Produto: d.produto, EstoqueAtual: d.estoqueUtil,
-                  ConsumoDiario: d.consumoDiario.toFixed(2), CoberturaAtual: isFinite(d.diasCobertura) ? Math.round(d.diasCobertura) : '∞',
+                  ConsumoDiario: d.consumoDiario.toFixed(2),
+                  DemandaAteReposicao: Math.round(d.demandaAteReposicao),
+                  UnidadesQuePodePerder: Math.round(d.unidadesQuePodePerder),
+                  ReceitaQuePodeSerPerdida: d.receitaEmRisco,
+                  CoberturaAtual: isFinite(d.diasCobertura) ? Math.round(d.diasCobertura) : '∞',
                   QtdSugerida: d.sugestaoCompra, ValorEstimado: d.valorSugestaoCompra,
                   Prioridade: d.scorePrioridade >= 70 ? 'Alta' : d.scorePrioridade >= 40 ? 'Média' : 'Baixa',
                   Motivo: d.motivo,

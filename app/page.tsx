@@ -23,6 +23,9 @@ interface SKU {
   estoqueUtil: number
   valorUnitario: number
   precoVenda: number
+  precoMedioVenda: number
+  receitaPeriodo: number
+  precoVendaFonte: 'woocommerce' | 'estimado'
   margem: number
   valorEstoque: number
   consumo: number
@@ -250,8 +253,19 @@ const fmtDate = (d: string | Date) => new Intl.DateTimeFormat('pt-BR', { dateSty
 // ─── CSV PARSING ───────────────────────────────────────────────────────────
 
 function parseBRL(s: string | undefined | null): number {
-  if (!s) return 0
-  return parseFloat(String(s).trim().replace('R$', '').replace(/\./g, '').replace(',', '.')) || 0
+  if (s === undefined || s === null) return 0
+  const raw = String(s).trim()
+  if (!raw) return 0
+
+  // Aceita BRL/pt-BR (R$ 1.878,66) e números vindos de APIs (1878.66).
+  const cleaned = raw.replace(/R\$/g, '').replace(/\s/g, '').replace(/[^0-9,.-]/g, '')
+  if (!cleaned) return 0
+
+  if (cleaned.includes(',')) {
+    return parseFloat(cleaned.replace(/\./g, '').replace(',', '.')) || 0
+  }
+
+  return parseFloat(cleaned) || 0
 }
 
 function detectCSVType(text: string): 'stock' | 'consumption' | 'coverage' | 'unknown' {
@@ -298,22 +312,35 @@ function recommend(c: Classification, sku: { giro: number; valorEstoque: number;
   return 'manter'
 }
 
-function buildMotivo(c: Classification, dias: number, valorEstoque: number, receitaEmRisco: number): string {
+function buildMotivo(
+  c: Classification,
+  dias: number,
+  valorEstoque: number,
+  receitaEmRisco: number,
+  consumo: number,
+  estoqueUtil: number,
+  periodoDias: number,
+  precoVendaFonte: 'woocommerce' | 'estimado',
+): string {
+  const fontePreco = precoVendaFonte === 'woocommerce' ? 'preço médio real do WooCommerce' : 'preço estimado por custo + margem'
+
   switch (c) {
     case 'critico':
-      if (!isFinite(dias) || dias <= 0) return 'Estoque zerado com demanda ativa — receita perdida agora'
-      return `Apenas ${Math.round(dias)} dias até ruptura. Risco de ${fmtBRLcompact(receitaEmRisco)} em receita perdida`
+      if (!isFinite(dias) || dias <= 0) {
+        return `Vendeu ${fmtNum(consumo)} un em ${periodoDias} dias, tem ${fmtNum(estoqueUtil)} em estoque e pode deixar de vender ${fmtBRLcompact(receitaEmRisco)} durante o lead time (${fontePreco}).`
+      }
+      return `Vendeu ${fmtNum(consumo)} un em ${periodoDias} dias, cobertura de ${Math.round(dias)}d e risco de ${fmtBRLcompact(receitaEmRisco)} durante o lead time.`
     case 'ruptura':
-      return `Cobertura crítica de ${Math.round(dias)} dias. Comprar antes da próxima venda perdida`
+      return `Cobertura crítica de ${Math.round(dias)}d. Demanda real de ${fmtNum(consumo)} un em ${periodoDias} dias pode virar venda perdida.`
     case 'atencao':
-      return `${Math.round(dias)} dias de cobertura — abaixo do lead time + segurança`
+      return `${Math.round(dias)}d de cobertura — abaixo do lead time + segurança. Monitorar compra.`
     case 'parado':
-      return `Sem giro · ${fmtBRLcompact(valorEstoque)} de capital travado`
+      return `${fmtNum(estoqueUtil)} un em estoque e ${fmtNum(consumo)} vendidas em ${periodoDias} dias — ${fmtBRLcompact(valorEstoque)} de capital travado.`
     case 'excesso':
-      return `Cobertura excessiva de ${Math.round(dias)} dias — capital subutilizado`
+      return `Cobertura excessiva de ${Math.round(dias)}d com base nas vendas dos últimos ${periodoDias} dias — capital subutilizado.`
     case 'saudavel':
     default:
-      return 'Operando dentro da margem saudável'
+      return 'Operando dentro da margem saudável.'
   }
 }
 
@@ -321,27 +348,42 @@ function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, pa
   const stockRows = parseCSV(stockRaw)
   const consumoRows = parseCSV(consumoRaw)
 
-  const stockMap = new Map<string, { produto: string; qtdDisp: number; qtdBloq: number; reserva: number; valor: number }>()
+  const stockMap = new Map<string, { produto: string; qtdDisp: number; qtdBloq: number; qtdTotal: number; reserva: number; valor: number }>()
   stockRows.forEach(r => {
     const cod = r['Codigo']
     if (!cod || cod === 'Total') return
     const e = stockMap.get(cod)
     const qtdDisp = parseBRL(r['Quantidade disponível'])
     const qtdBloq = parseBRL(r['Quantidade bloqueada'])
+    const qtdTotal = parseBRL(r['Quantidade total']) || qtdDisp + qtdBloq
     const reserva = parseBRL(r['Reserva virtual'])
     const valor = parseBRL(r['Valor mercadorias'])
-    if (!e) stockMap.set(cod, { produto: r['Produto'] || cod, qtdDisp, qtdBloq, reserva, valor })
-    else { e.qtdDisp += qtdDisp; e.qtdBloq += qtdBloq; e.reserva += reserva; e.valor += valor }
+    if (!e) stockMap.set(cod, { produto: r['Produto'] || cod, qtdDisp, qtdBloq, qtdTotal, reserva, valor })
+    else {
+      e.qtdDisp += qtdDisp
+      e.qtdBloq += qtdBloq
+      e.qtdTotal += qtdTotal
+      e.reserva += reserva
+      e.valor += valor
+    }
   })
 
-  const consumoMap = new Map<string, { produto: string; quantidade: number }>()
+  const estoqueValorTotal = Array.from(stockMap.values()).reduce((total, item) => total + item.valor, 0)
+  const estoqueQtdBaseTotal = Array.from(stockMap.values()).reduce((total, item) => total + (item.qtdTotal > 0 ? item.qtdTotal : item.qtdDisp + item.qtdBloq), 0)
+  const valorUnitarioMedioEstoque = estoqueQtdBaseTotal > 0 ? estoqueValorTotal / estoqueQtdBaseTotal : 0
+
+  const consumoMap = new Map<string, { produto: string; quantidade: number; receita: number }>()
   consumoRows.forEach(r => {
     const cod = r['Codigo']
     if (!cod) return
     const e = consumoMap.get(cod)
     const qtd = parseBRL(r['Quantidade'])
-    if (!e) consumoMap.set(cod, { produto: r['Produto'] || cod, quantidade: qtd })
-    else e.quantidade += qtd
+    const receita = parseBRL(r['Receita'] || r['Receita WooCommerce'] || r['Total'] || r['Subtotal'] || r['Revenue'])
+    if (!e) consumoMap.set(cod, { produto: r['Produto'] || cod, quantidade: qtd, receita })
+    else {
+      e.quantidade += qtd
+      e.receita += receita
+    }
   })
 
   const allCodes = new Set([...stockMap.keys(), ...consumoMap.keys()])
@@ -353,9 +395,11 @@ function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, pa
     const produto = stock?.produto || consumoData?.produto || codigo
     const qtdDisponivel = stock?.qtdDisp ?? 0
     const qtdBloqueada = stock?.qtdBloq ?? 0
+    const qtdTotal = stock?.qtdTotal ?? qtdDisponivel + qtdBloqueada
     const reservaVirtual = stock?.reserva ?? 0
     const valorMercadorias = stock?.valor ?? 0
     const consumo = consumoData?.quantidade || 0
+    const receitaPeriodo = consumoData?.receita || 0
     const semEstoqueEncontrado = !stock
 
     // Regra de negócio: estoque < 5 trata como zero (devoluções pontuais)
@@ -363,9 +407,21 @@ function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, pa
     if (estoqueUtilCalc < 5) estoqueUtilCalc = 0
     const estoqueUtil = estoqueUtilCalc
 
-    const valorUnitario = qtdDisponivel > 0 && valorMercadorias > 0 ? valorMercadorias / qtdDisponivel : 0
+    // Valor unitário de estoque deve usar o total da mercadoria quando existir.
+    // Antes o cálculo usava apenas a quantidade disponível, o que distorcia SKUs com reserva/bloqueio
+    // e fazia alguns filamentos parecerem muito mais caros do que são.
+    const baseValorEstoque = qtdTotal > 0 ? qtdTotal : (qtdDisponivel + qtdBloqueada > 0 ? qtdDisponivel + qtdBloqueada : qtdDisponivel)
+    const valorUnitarioCalculado = baseValorEstoque > 0 && valorMercadorias > 0 ? valorMercadorias / baseValorEstoque : 0
+    const valorUnitario = valorUnitarioCalculado > 0 ? valorUnitarioCalculado : valorUnitarioMedioEstoque
     const margem = params.margemPadrao
-    const precoVenda = valorUnitario > 0 ? valorUnitario / (1 - margem) : 0
+
+    // Receita que podemos deixar de ganhar usa o preço médio real vendido no WooCommerce.
+    // Se a rota ainda não enviar receita por SKU, cai para uma estimativa explícita por custo + margem.
+    const precoMedioVendaReal = consumo > 0 && receitaPeriodo > 0 ? receitaPeriodo / consumo : 0
+    const precoVendaEstimado = valorUnitario > 0 ? valorUnitario / (1 - margem) : 0
+    const precoMedioVenda = precoMedioVendaReal > 0 ? precoMedioVendaReal : precoVendaEstimado
+    const precoVendaFonte: 'woocommerce' | 'estimado' = precoMedioVendaReal > 0 ? 'woocommerce' : 'estimado'
+    const precoVenda = precoMedioVenda
     const valorEstoque = estoqueUtil * valorUnitario
 
     const consumoDiario = params.periodoRelatorioDias > 0 ? consumo / params.periodoRelatorioDias : 0
@@ -378,28 +434,37 @@ function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, pa
     const sugestaoCompra = Math.max(0, Math.ceil(estoqueNecessario - estoqueUtil))
     const valorSugestaoCompra = sugestaoCompra * valorUnitario
 
-    const diasSemEstoqueProjetado = classification === 'critico' ? params.leadTimeDias :
-      classification === 'ruptura' ? Math.max(0, params.leadTimeDias - diasCobertura) :
-      classification === 'atencao' ? Math.max(0, params.leadTimeDias - diasCobertura) : 0
-    const receitaEmRisco = consumoDiario * diasSemEstoqueProjetado * precoVenda
+    // Receita perdida projetada: venda real dos últimos 90 dias + preço médio real vendido + lead time.
+    // Assim os SKUs com maior movimentação tendem a aparecer com maior risco financeiro quando o preço é similar.
+    const coberturaParaCalculo = consumoDiario > 0 ? Math.max(0, isFinite(diasCobertura) ? diasCobertura : params.leadTimeDias) : params.leadTimeDias
+    const diasSemEstoqueProjetado = consumoDiario > 0 ? Math.max(0, params.leadTimeDias - coberturaParaCalculo) : 0
+    const unidadesPerdidasProjetadas = consumoDiario * diasSemEstoqueProjetado
+    const receitaEmRisco = unidadesPerdidasProjetadas * precoMedioVenda
 
-    const capitalParado = (classification === 'parado' || classification === 'excesso') ? valorEstoque : 0
-    const recommendation = recommend(classification, { giro, valorEstoque, consumo })
+    // Caixa parado: estoque acima do necessário para cobrir lead time + segurança.
+    // Se não vendeu nada no período, todo o estoque útil é tratado como capital parado.
+    const estoqueExcedente = consumo > 0 ? Math.max(0, estoqueUtil - estoqueNecessario) : estoqueUtil
+    const capitalParado = estoqueExcedente * valorUnitario
+    const recommendation = recommend(classification, { giro, valorEstoque: capitalParado || valorEstoque, consumo })
 
     let scorePrioridade = 0
-    if (classification === 'critico') scorePrioridade = 90 + Math.min(10, receitaEmRisco / 1000)
-    else if (classification === 'ruptura') scorePrioridade = 70 + Math.min(20, receitaEmRisco / 1000)
-    else if (classification === 'atencao') scorePrioridade = 40 + Math.min(20, receitaEmRisco / 2000)
-    else if (classification === 'parado') scorePrioridade = 20 + Math.min(20, valorEstoque / 5000)
-    else if (classification === 'excesso') scorePrioridade = 10 + Math.min(15, valorEstoque / 10000)
+    const pesoReceita = Math.min(45, Math.log10(receitaEmRisco + 1) * 9)
+    const pesoDemanda = Math.min(20, Math.log10(consumo + 1) * 4.5)
+    const pesoEstoque = estoqueUtil <= 0 && consumo > 0 ? 20 : isFinite(diasCobertura) && diasCobertura < 7 ? 15 : isFinite(diasCobertura) && diasCobertura < 15 ? 10 : 0
+
+    if (classification === 'critico') scorePrioridade = 35 + pesoReceita + pesoDemanda + pesoEstoque
+    else if (classification === 'ruptura') scorePrioridade = 28 + pesoReceita + pesoDemanda + pesoEstoque
+    else if (classification === 'atencao') scorePrioridade = 18 + pesoReceita + pesoDemanda
+    else if (classification === 'parado') scorePrioridade = 18 + Math.min(35, Math.log10(capitalParado + 1) * 7)
+    else if (classification === 'excesso') scorePrioridade = 12 + Math.min(30, Math.log10(capitalParado + 1) * 6)
     else scorePrioridade = 5
     scorePrioridade = Math.min(100, Math.round(scorePrioridade))
 
-    const motivo = buildMotivo(classification, diasCobertura, valorEstoque, receitaEmRisco)
+    const motivo = buildMotivo(classification, diasCobertura, capitalParado || valorEstoque, receitaEmRisco, consumo, estoqueUtil, params.periodoRelatorioDias, precoVendaFonte)
 
     skus.push({
       codigo, produto, qtdDisponivel, qtdBloqueada, reservaVirtual, estoqueUtil,
-      valorUnitario, precoVenda, margem, valorEstoque, consumo, consumoDiario,
+      valorUnitario, precoVenda, precoMedioVenda, receitaPeriodo, precoVendaFonte, margem, valorEstoque, consumo, consumoDiario,
       diasCobertura, giro, classification, recommendation, sugestaoCompra,
       valorSugestaoCompra, receitaEmRisco, capitalParado, scorePrioridade,
       motivo, semEstoqueEncontrado,
@@ -444,10 +509,23 @@ function buildConsumoCsvFromWoo(skuSummary: any[]) {
       const sku = escapeCsvValue(item.sku)
       const name = escapeCsvValue(item.name || item.sku)
       const quantity = Number(item.quantity || 0)
-      return `${sku};${name};${quantity}`
+
+      // A rota pode retornar revenue, total, subtotal ou campos agregados equivalentes.
+      // Essa receita é a base correta para calcular venda perdida projetada.
+      const revenue = Number(
+        item.revenue ??
+        item.totalRevenue ??
+        item.total_revenue ??
+        item.total ??
+        item.subtotal ??
+        item.sales ??
+        0
+      ) || 0
+
+      return `${sku};${name};${quantity};${revenue.toFixed(2)}`
     })
 
-  return ['Codigo;Produto;Quantidade', ...rows].join('\n')
+  return ['Codigo;Produto;Quantidade;Receita', ...rows].join('\n')
 }
 
 // ─── MOCK DATA ─────────────────────────────────────────────────────────────
@@ -768,7 +846,7 @@ function DecisionCard({ sku, rank }: { sku: SKU; rank: number }) {
 
         <div className="grid grid-cols-3 gap-4 lg:flex-1">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Receita em risco</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">Receita que pode ser perdida</p>
             <p className="mt-1 text-sm font-bold text-rose-700">{fmtBRLcompact(sku.receitaEmRisco)}</p>
           </div>
           <div>
@@ -948,7 +1026,15 @@ export default function Page() {
 
   const topDecisions = useMemo(() => {
     if (!data.length) return []
-    return [...data].sort((a, b) => b.scorePrioridade - a.scorePrioridade).slice(0, 5)
+    return [...data]
+      .sort((a, b) =>
+        b.receitaEmRisco - a.receitaEmRisco ||
+        b.consumo - a.consumo ||
+        a.diasCobertura - b.diasCobertura ||
+        b.capitalParado - a.capitalParado ||
+        b.scorePrioridade - a.scorePrioridade
+      )
+      .slice(0, 5)
   }, [data])
 
   const cashLeakData = useMemo(() => {
@@ -966,7 +1052,12 @@ export default function Page() {
   const importOrderData = useMemo(() => {
     return [...data]
       .filter(d => d.sugestaoCompra > 0)
-      .sort((a, b) => b.scorePrioridade - a.scorePrioridade)
+      .sort((a, b) =>
+        b.receitaEmRisco - a.receitaEmRisco ||
+        b.consumo - a.consumo ||
+        a.diasCobertura - b.diasCobertura ||
+        b.scorePrioridade - a.scorePrioridade
+      )
   }, [data])
 
   const notBuyData = useMemo(() => {
@@ -1214,6 +1305,9 @@ export default function Page() {
           diasCobertura: d.diasCobertura,
           classification: d.classification,
           recommendation: d.recommendation,
+          receitaPeriodo: d.receitaPeriodo,
+          precoMedioVenda: d.precoMedioVenda,
+          precoVendaFonte: d.precoVendaFonte,
           receitaEmRisco: d.receitaEmRisco,
           capitalParado: d.capitalParado,
           sugestaoCompra: d.sugestaoCompra,
@@ -1246,7 +1340,7 @@ export default function Page() {
   const tabs: { id: Tab; label: string; icon: string; badge?: number }[] = [
     { id: 'overview', label: 'Visão geral', icon: 'chart' },
     { id: 'cash-leak', label: 'Caixa parado', icon: 'cash', badge: summary ? summary.parado + summary.excesso : 0 },
-    { id: 'revenue-risk', label: 'Risco de ruptura', icon: 'alert', badge: summary ? summary.criticos + summary.ruptura : 0 },
+    { id: 'revenue-risk', label: 'Receita que pode ser perdida', icon: 'alert', badge: summary ? summary.criticos + summary.ruptura : 0 },
     { id: 'import-ai', label: 'Pedido recomendado', icon: 'truck', badge: importOrderData.length },
     { id: 'not-buy', label: 'Não recomprar', icon: 'block', badge: notBuyData.length },
     { id: 'simulation', label: 'Simulação', icon: 'sliders' },
@@ -1537,7 +1631,7 @@ export default function Page() {
                       <p className="mt-1 font-mono text-xs text-slate-500">{heroDecision.codigo}</p>
                       <div className="mt-6 grid grid-cols-2 gap-3">
                         <div className="rounded-xl border border-rose-100 bg-rose-50 p-4">
-                          <p className="text-[10px] uppercase tracking-[0.16em] text-rose-700/70">Receita em risco</p>
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-rose-700/70">Receita que pode ser perdida</p>
                           <p className="mt-2 text-2xl font-black text-rose-700">{fmtBRLcompact(heroDecision.receitaEmRisco)}</p>
                         </div>
                         <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4">
@@ -1559,7 +1653,7 @@ export default function Page() {
             </section>
 
             <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <KpiCard label="Receita em risco" value={fmtBRLcompact(summary.receitaEmRisco)} sub={`${summary.criticos + summary.ruptura} SKUs críticos ou em ruptura`} icon="alert" tone="rose" emphasis />
+              <KpiCard label="Receita que pode ser perdida" value={fmtBRLcompact(summary.receitaEmRisco)} sub={`${summary.criticos + summary.ruptura} SKUs críticos ou em ruptura`} icon="alert" tone="rose" emphasis />
               <KpiCard label="Capital parado" value={fmtBRLcompact(summary.capitalParado)} sub={`${fmtPct(summary.pctParado)} do estoque em parado/excesso`} icon="cash" tone="violet" emphasis />
               <KpiCard label="Compra recomendada" value={fmtBRLcompact(summary.sugestaoTotal)} sub={`${fmtNum(summary.compraRecomendadaUn)} unidades sugeridas`} icon="truck" tone="emerald" emphasis />
               <KpiCard label="Caixa liberável" value={fmtBRLcompact(summary.caixaLiberavel)} sub="Estimativa ao promover/liquidar travados" icon="bolt" tone="cyan" emphasis />
@@ -1575,7 +1669,7 @@ export default function Page() {
               <SectionTitle
                 eyebrow="Prioridade executiva"
                 title="Decisões de hoje"
-                subtitle="Top 5 SKUs em cards executivos. O ranking combina risco de ruptura, receita em risco, capital travado e recomendação operacional."
+                subtitle="Top 5 SKUs em cards executivos. O ranking combina receita que pode ser perdida, receita em risco, capital travado e recomendação operacional."
                 right={<button onClick={() => setAiOpen(true)} className="rounded-full border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-bold text-violet-700 transition hover:bg-violet-100">Perguntar para IA</button>}
               />
               <GlassPanel className="overflow-hidden">
@@ -1583,7 +1677,7 @@ export default function Page() {
                   <span>Rank</span>
                   <span>Produto</span>
                   <span>Status</span>
-                  <span className="text-right">Receita em risco</span>
+                  <span className="text-right">Receita que pode ser perdida</span>
                   <span className="text-right">Comprar</span>
                 </div>
                 <div className="divide-y divide-slate-100">
@@ -1600,7 +1694,7 @@ export default function Page() {
                       </div>
                       <div className="flex flex-wrap gap-2"><ClassBadge c={d.classification} /><RecBadge r={d.recommendation} /></div>
                       <div className="text-left lg:text-right">
-                        <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400 lg:hidden">Receita em risco</p>
+                        <p className="text-[10px] uppercase tracking-[0.14em] text-slate-400 lg:hidden">Receita que pode ser perdida</p>
                         <p className="text-sm font-bold text-rose-700">{fmtBRLcompact(d.receitaEmRisco)}</p>
                       </div>
                       <div className="text-left lg:text-right">
@@ -1624,7 +1718,7 @@ export default function Page() {
                 <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-rose-50 text-rose-700 ring-1 ring-rose-100"><Icon name="alert" className="h-5 w-5" /></div>
                 <p className="mt-5 text-lg font-semibold text-slate-900">O que pode romper?</p>
                 <p className="mt-2 text-sm leading-6 text-slate-500">{summary.criticos + summary.ruptura} SKUs em risco e {fmtBRLcompact(summary.receitaEmRisco)} em jogo.</p>
-                <p className="mt-4 text-sm font-bold text-rose-700">Ver risco de ruptura →</p>
+                <p className="mt-4 text-sm font-bold text-rose-700">Ver receita que pode ser perdida →</p>
               </button>
               <button onClick={() => setTab('not-buy')} className="group rounded-xl border border-slate-200 bg-white p-6 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-amber-200 hover:shadow-md">
                 <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-amber-50 text-amber-700 ring-1 ring-amber-100"><Icon name="block" className="h-5 w-5" /></div>
@@ -1743,10 +1837,10 @@ export default function Page() {
         {/* RISCO DE RUPTURA */}
         {tab === 'revenue-risk' && summary && (
           <div className="space-y-6">
-            <SectionTitle eyebrow="Revenue Protection" title="Risco de ruptura" subtitle="Produtos com cobertura insuficiente, demanda ativa e potencial de receita perdida." />
+            <SectionTitle eyebrow="Revenue Protection" title="Receita que pode ser perdida" subtitle="Produtos com cobertura insuficiente, demanda ativa e potencial de receita perdida." />
 
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <KpiCard label="Receita em risco" value={fmtBRLcompact(summary.receitaEmRisco)} tone="rose" icon="alert" />
+              <KpiCard label="Receita que pode ser perdida" value={fmtBRLcompact(summary.receitaEmRisco)} tone="rose" icon="alert" />
               <KpiCard label="SKUs críticos" value={summary.criticos} tone="rose" sub="Ruptura agora ou quase agora" icon="target" />
               <KpiCard label="Ruptura iminente" value={summary.ruptura} tone="amber" sub="Cobertura até 15 dias" icon="clock" />
               <KpiCard label="Em atenção" value={summary.atencao} tone="amber" sub="Cobertura até 30 dias" icon="shield" />
@@ -1754,7 +1848,7 @@ export default function Page() {
 
             <div className="space-y-3">
               {revenueRiskData.length === 0 ? (
-                <EmptyState title="Nenhum produto em risco de ruptura" subtitle="A cobertura atual está saudável para o período analisado." icon="check" />
+                <EmptyState title="Nenhum produto em receita que pode ser perdida" subtitle="A cobertura atual está saudável para o período analisado." icon="check" />
               ) : revenueRiskData.map((d, i) => (
                 <GlassPanel key={d.codigo} className={cn('overflow-hidden', CLASS_TONES[d.classification].border)}>
                   <SkuCompactRow
@@ -1763,7 +1857,7 @@ export default function Page() {
                     right={
                       <div className="grid shrink-0 grid-cols-2 gap-3 text-right sm:min-w-[340px]">
                         <div className="hidden rounded-xl border border-rose-100 bg-rose-50 p-3 sm:block">
-                          <p className="text-[10px] uppercase tracking-[0.16em] text-rose-700/70">Receita em risco</p>
+                          <p className="text-[10px] uppercase tracking-[0.16em] text-rose-700/70">Receita que pode ser perdida</p>
                           <p className="mt-1 font-black text-rose-700">{fmtBRLcompact(d.receitaEmRisco)}</p>
                         </div>
                         <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3">
@@ -1814,7 +1908,7 @@ export default function Page() {
               })
               if (items.length === 0) return null
               const config = {
-                alta: { label: 'Prioridade alta', desc: 'Comprar imediatamente — risco de ruptura ou receita relevante.', tone: 'rose' as Tone, text: 'text-rose-700' },
+                alta: { label: 'Prioridade alta', desc: 'Comprar imediatamente — receita que pode ser perdida ou receita relevante.', tone: 'rose' as Tone, text: 'text-rose-700' },
                 media: { label: 'Prioridade média', desc: 'Incluir no próximo pedido para proteger cobertura.', tone: 'amber' as Tone, text: 'text-amber-700' },
                 baixa: { label: 'Prioridade baixa', desc: 'Pode aguardar ciclo seguinte se orçamento apertar.', tone: 'emerald' as Tone, text: 'text-emerald-700' },
               }[priority]
@@ -2076,7 +2170,7 @@ export default function Page() {
                       {simulation.criticosForaOrcamento.length > 0 ? ` · ${simulation.criticosForaOrcamento.length} críticos` : ''}
                     </p>
                     <p className="mt-1 text-sm leading-6 text-amber-700/70">
-                      Receita em risco residual: {fmtBRLcompact(simulation.riscoRupturaResidual)}. Para cobrir todos os SKUs prioritários, considere adicionar {fmtBRLcompact(simulation.evitados.reduce((a, d) => a + d.valorSugestaoCompra, 0))}.
+                      Receita que pode ser perdida residual: {fmtBRLcompact(simulation.riscoRupturaResidual)}. Para cobrir todos os SKUs prioritários, considere adicionar {fmtBRLcompact(simulation.evitados.reduce((a, d) => a + d.valorSugestaoCompra, 0))}.
                     </p>
                   </div>
                 </div>

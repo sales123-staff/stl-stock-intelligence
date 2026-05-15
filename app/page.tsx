@@ -10,7 +10,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 // ─── TYPES ─────────────────────────────────────────────────────────────────
 
 type Classification = 'critico' | 'ruptura' | 'atencao' | 'saudavel' | 'excesso' | 'parado'
-type Tab = 'overview' | 'current-stock' | 'cash-leak' | 'revenue-risk' | 'import-ai' | 'not-buy' | 'simulation' | 'integrations'
+type Tab = 'overview' | 'current-stock' | 'cash-leak' | 'revenue-risk' | 'import-ai' | 'not-buy' | 'simulation' | 'security' | 'integrations'
 type Recommendation = 'comprar-urgente' | 'comprar' | 'manter' | 'pausar' | 'promover' | 'liquidar' | 'descontinuar'
 type Tone = 'emerald' | 'rose' | 'violet' | 'cyan' | 'amber' | 'zinc' | 'blue'
 
@@ -68,6 +68,42 @@ interface DataSourceState {
   wooSkus?: number
   wooItems?: number
   wooRevenue?: number
+}
+
+// ─── SECURITY TYPES ────────────────────────────────────────────────────────
+
+interface SecurityOrder {
+  id: number
+  number: string
+  status: string
+  total: number
+  dateCreated: string
+  billingName: string
+  billingEmail: string
+  billingPhone: string
+  billingAddress: string
+}
+
+type RiskLevel = 'alto' | 'medio' | 'baixo'
+
+interface SuspiciousCluster {
+  id: string
+  riskLevel: RiskLevel
+  riskScore: number
+  reasons: string[]
+  displayNames: string[]
+  displayEmails: string[]
+  displayPhones: string[]
+  displayAddresses: string[]
+  orderIds: number[]
+  orderNumbers: string[]
+  statuses: string[]
+  totalValue: number
+  firstAttempt: string
+  lastAttempt: string
+  orderCount: number
+  suggestedAction: string
+  clusterType: 'email' | 'telefone' | 'endereco' | 'nome'
 }
 
 const DEFAULT_PARAMS: AppParams = {
@@ -240,6 +276,13 @@ const TONE_STYLES: Record<Tone, {
   },
 }
 
+
+const RISK_CONFIG: Record<RiskLevel, { badge: string; dot: string; text: string; label: string }> = {
+  alto:  { badge: 'border-rose-200 bg-rose-50 text-rose-700',    dot: 'bg-rose-500',  text: 'text-rose-700',  label: 'Risco alto' },
+  medio: { badge: 'border-amber-200 bg-amber-50 text-amber-700', dot: 'bg-amber-500', text: 'text-amber-700', label: 'Risco médio' },
+  baixo: { badge: 'border-sky-200 bg-sky-50 text-sky-700',       dot: 'bg-sky-500',   text: 'text-sky-700',   label: 'Risco baixo' },
+}
+
 // ─── FORMATTING ────────────────────────────────────────────────────────────
 
 const cn = (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' ')
@@ -252,6 +295,13 @@ const fmtDias = (n: number) => (!isFinite(n) ? '∞' : `${Math.round(n)}d`)
 const fmtPct = (n: number) => `${(n || 0).toFixed(1)}%`
 const fmtDateTime = (d: string | Date) => new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(d))
 const fmtDate = (d: string | Date) => new Intl.DateTimeFormat('pt-BR', { dateStyle: 'medium' }).format(new Date(d))
+const fmtDateShort = (d: string | Date) => {
+  try {
+    return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(d))
+  } catch {
+    return String(d)
+  }
+}
 
 // ─── CSV PARSING ───────────────────────────────────────────────────────────
 
@@ -540,6 +590,158 @@ function buildConsumoCsvFromWoo(skuSummary: any[]) {
   return ['Codigo;Produto;Quantidade;Receita', ...rows].join('\n')
 }
 
+
+// ─── SECURITY HELPERS ──────────────────────────────────────────────────────
+
+function normalizeText(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function normalizePhone(s: string): string {
+  return (s || '').replace(/\D/g, '')
+}
+
+function normalizeEmail(s: string): string {
+  return (s || '').toLowerCase().trim()
+}
+
+function maskEmail(email: string): string {
+  if (!email || !email.includes('@')) return email || 'n/a'
+  const [user, domain] = email.split('@')
+  if (!domain) return email
+  return `${user.slice(0, 2)}***@${domain}`
+}
+
+function maskPhone(phone: string): string {
+  const digits = normalizePhone(phone)
+  if (digits.length < 6) return phone || 'n/a'
+  return `${digits.slice(0, 2)} ${digits.slice(2, 4)}***${digits.slice(-2)}`
+}
+
+function riskLevelFromScore(score: number): RiskLevel {
+  if (score >= 70) return 'alto'
+  if (score >= 40) return 'medio'
+  return 'baixo'
+}
+
+function dateSortAsc(a: SecurityOrder, b: SecurityOrder) {
+  return a.dateCreated.localeCompare(b.dateCreated)
+}
+
+function analyzeSecurityOrders(orders: SecurityOrder[]): SuspiciousCluster[] {
+  const RISK_STATUSES = new Set(['failed', 'cancelled', 'pending', 'on-hold', 'refunded', 'checkout-draft'])
+  const riskOrders = orders.filter(o => RISK_STATUSES.has(o.status))
+  if (!riskOrders.length) return []
+
+  const clusters: SuspiciousCluster[] = []
+  const processedOrderIds = new Set<number>()
+
+  function makeCluster(
+    clusterType: SuspiciousCluster['clusterType'],
+    key: string,
+    clusterOrders: SecurityOrder[],
+    baseScore: number,
+    baseReason: string,
+  ) {
+    if (clusterOrders.length < 2) return
+
+    let score = baseScore
+    const reasons: string[] = [baseReason]
+    const totalValue = clusterOrders.reduce((s, o) => s + Number(o.total || 0), 0)
+    const uniqueNames = [...new Set(clusterOrders.map(o => normalizeText(o.billingName)).filter(Boolean))]
+    const uniqueAddresses = [...new Set(clusterOrders.map(o => normalizeText(o.billingAddress)).filter(Boolean))]
+    const days = clusterOrders.map(o => (o.dateCreated || '').slice(0, 10)).filter(Boolean)
+    const hasSameDay = days.some((d, i) => days.indexOf(d) !== i)
+
+    if (clusterOrders.length >= 3) score += 15
+    if (uniqueNames.length > 1) { score += 20; reasons.push(`${uniqueNames.length} nomes diferentes no mesmo padrão`) }
+    if (uniqueAddresses.length > 1 && clusterType !== 'endereco') { score += 10; reasons.push(`${uniqueAddresses.length} endereços diferentes no mesmo padrão`) }
+    if (totalValue >= 2000) { score += 15; reasons.push(`Valor total alto: ${fmtBRLcompact(totalValue)}`) }
+    else if (totalValue >= 1000) { score += 10; reasons.push(`Valor total relevante: ${fmtBRLcompact(totalValue)}`) }
+    if (hasSameDay) { score += 10; reasons.push('Múltiplas tentativas no mesmo dia') }
+
+    const sorted = [...clusterOrders].sort(dateSortAsc)
+    const riskLevel = riskLevelFromScore(score)
+    clusterOrders.forEach(o => processedOrderIds.add(o.id))
+
+    clusters.push({
+      id: `${clusterType}-${key}`,
+      riskLevel,
+      riskScore: Math.min(100, Math.round(score)),
+      reasons,
+      displayNames: [...new Set(clusterOrders.map(o => o.billingName).filter(Boolean))],
+      displayEmails: [...new Set(clusterOrders.map(o => maskEmail(o.billingEmail)).filter(Boolean))],
+      displayPhones: [...new Set(clusterOrders.map(o => maskPhone(o.billingPhone)).filter(Boolean))],
+      displayAddresses: [...new Set(clusterOrders.map(o => o.billingAddress).filter(Boolean))],
+      orderIds: clusterOrders.map(o => o.id),
+      orderNumbers: clusterOrders.map(o => o.number || String(o.id)),
+      statuses: [...new Set(clusterOrders.map(o => o.status))],
+      totalValue,
+      firstAttempt: sorted[0]?.dateCreated || '',
+      lastAttempt: sorted[sorted.length - 1]?.dateCreated || '',
+      orderCount: clusterOrders.length,
+      suggestedAction: riskLevel === 'alto'
+        ? 'Revisar manualmente e não liberar envio sem validação.'
+        : riskLevel === 'medio'
+          ? 'Verificar antifraude antes de qualquer liberação.'
+          : 'Monitorar novas tentativas e marcar como falso positivo se confirmado.',
+      clusterType,
+    })
+  }
+
+  const byEmail = new Map<string, SecurityOrder[]>()
+  riskOrders.forEach(o => {
+    const key = normalizeEmail(o.billingEmail)
+    if (!key || !key.includes('@')) return
+    byEmail.set(key, [...(byEmail.get(key) || []), o])
+  })
+  byEmail.forEach((grp, key) => makeCluster('email', key, grp, grp.length >= 3 ? 30 : 15, `E-mail repetido em ${grp.length} pedidos malsucedidos`))
+
+  const byPhone = new Map<string, SecurityOrder[]>()
+  riskOrders.forEach(o => {
+    const key = normalizePhone(o.billingPhone)
+    if (!key || key.length < 8) return
+    byPhone.set(key, [...(byPhone.get(key) || []), o])
+  })
+  byPhone.forEach((grp, key) => {
+    const unprocessed = grp.filter(o => !processedOrderIds.has(o.id))
+    makeCluster('telefone', key, unprocessed.length >= 2 ? unprocessed : grp, grp.length >= 3 ? 25 : 15, `Telefone repetido em ${grp.length} pedidos malsucedidos`)
+  })
+
+  const byAddress = new Map<string, SecurityOrder[]>()
+  riskOrders.forEach(o => {
+    const key = normalizeText(o.billingAddress)
+    if (!key || key.length < 10) return
+    byAddress.set(key, [...(byAddress.get(key) || []), o])
+  })
+  byAddress.forEach((grp, key) => {
+    if (grp.length < 2) return
+    const unprocessed = grp.filter(o => !processedOrderIds.has(o.id))
+    makeCluster('endereco', key.slice(0, 40), unprocessed.length >= 2 ? unprocessed : grp, grp.length >= 3 ? 40 : 25, `Endereço repetido em ${grp.length} pedidos malsucedidos`)
+  })
+
+  const byName = new Map<string, SecurityOrder[]>()
+  riskOrders.forEach(o => {
+    const key = normalizeText(o.billingName)
+    if (!key || key.length < 5) return
+    byName.set(key, [...(byName.get(key) || []), o])
+  })
+  byName.forEach((grp, key) => {
+    if (grp.length < 3) return
+    const unprocessed = grp.filter(o => !processedOrderIds.has(o.id))
+    makeCluster('nome', key, unprocessed.length >= 2 ? unprocessed : grp, 20, `Mesmo nome em ${grp.length} pedidos malsucedidos`)
+  })
+
+  const uniqueById = new Map<string, SuspiciousCluster>()
+  clusters.forEach(c => uniqueById.set(c.id, c))
+  return [...uniqueById.values()].sort((a, b) => b.riskScore - a.riskScore || b.totalValue - a.totalValue)
+}
+
 // ─── MOCK DATA ─────────────────────────────────────────────────────────────
 
 const MOCK_STOCK = `Codigo;Produto;Quantidade disponível;Quantidade bloqueada;Quantidade total;Volume;Valor mercadorias;Nf;Reserva virtual
@@ -684,6 +886,19 @@ PLAAMA1;PLA Amarelo;22
 PLASIL20;PLA Silk Preto e Dourado;12
 AMOSTRAS;AMOSTRAS;2`
 
+// Mock para demonstração da aba de segurança enquanto a rota não retornar riskOrders
+const MOCK_SECURITY_ORDERS: SecurityOrder[] = [
+  { id: 10001, number: '10453', status: 'failed', total: 485.90, dateCreated: '2026-05-10T14:23:00', billingName: 'Carlos Silva', billingEmail: 'carloss.xxx@hotmail.com', billingPhone: '11987654321', billingAddress: 'Rua das Flores 123, Vila Nova, São Paulo SP 01234-567' },
+  { id: 10002, number: '10454', status: 'failed', total: 612.50, dateCreated: '2026-05-10T14:47:00', billingName: 'Carlos Souza', billingEmail: 'carloss.xxx@hotmail.com', billingPhone: '11987654321', billingAddress: 'Rua das Flores 123, Vila Nova, São Paulo SP 01234-567' },
+  { id: 10003, number: '10461', status: 'cancelled', total: 723.00, dateCreated: '2026-05-11T09:12:00', billingName: 'C. Silva', billingEmail: 'csilva.novo@outlook.com', billingPhone: '11912345678', billingAddress: 'Rua das Flores 123, Vila Nova, São Paulo SP 01234-567' },
+  { id: 10004, number: '10467', status: 'failed', total: 892.00, dateCreated: '2026-05-12T10:00:00', billingName: 'Ana Costa', billingEmail: 'compras_fast@tempmail.io', billingPhone: '21900001111', billingAddress: 'Av. Brasil 500, Centro, Rio de Janeiro RJ 20000-000' },
+  { id: 10005, number: '10468', status: 'failed', total: 1200.00, dateCreated: '2026-05-12T10:15:00', billingName: 'Ana C.', billingEmail: 'compras_fast@tempmail.io', billingPhone: '21900001111', billingAddress: 'Av. Brasil 500, Centro, Rio de Janeiro RJ 20000-000' },
+  { id: 10006, number: '10469', status: 'failed', total: 950.00, dateCreated: '2026-05-12T10:31:00', billingName: 'Ana Costa', billingEmail: 'compras_fast@tempmail.io', billingPhone: '21987654321', billingAddress: 'Av. Brasil 502, Centro, Rio de Janeiro RJ 20000-002' },
+  { id: 10007, number: '10472', status: 'on-hold', total: 340.00, dateCreated: '2026-05-13T08:20:00', billingName: 'Pedro Lima', billingEmail: 'pedro.lima@gmail.com', billingPhone: '51934567890', billingAddress: 'Rua Alegre 77, Jardim, Porto Alegre RS 90000-123' },
+  { id: 10008, number: '10480', status: 'failed', total: 280.00, dateCreated: '2026-05-14T16:05:00', billingName: 'Pedro J. Lima', billingEmail: 'p.lima.novo@gmail.com', billingPhone: '51934567890', billingAddress: 'Rua Alegre 77, Jardim, Porto Alegre RS 90000-123' },
+  { id: 10009, number: '10481', status: 'failed', total: 510.00, dateCreated: '2026-05-14T16:22:00', billingName: 'P Lima', billingEmail: 'plima_xx@yahoo.com', billingPhone: '51934567890', billingAddress: 'Rua Alegre 77, Jardim, Porto Alegre RS 90000-123' },
+]
+
 // ─── ICONS ─────────────────────────────────────────────────────────────────
 
 const Icon = ({ name, className = 'h-4 w-4' }: { name: string; className?: string }) => {
@@ -753,6 +968,17 @@ function ClassBadge({ c }: { c: Classification }) {
 
 function RecBadge({ r }: { r: Recommendation }) {
   return <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold whitespace-nowrap', REC_TONES[r])}>{REC_LABELS[r]}</span>
+}
+
+
+function RiskBadge({ level }: { level: RiskLevel }) {
+  const cfg = RISK_CONFIG[level]
+  return (
+    <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold', cfg.badge)}>
+      <span className={cn('h-1.5 w-1.5 rounded-full', cfg.dot)} />
+      {cfg.label}
+    </span>
+  )
 }
 
 function KpiCard({
@@ -994,6 +1220,12 @@ export default function Page() {
   const [aiError, setAiError] = useState('')
   const [stockSearch, setStockSearch] = useState('')
 
+  const [securityOrders, setSecurityOrders] = useState<SecurityOrder[]>(MOCK_SECURITY_ORDERS)
+  const [securityLoading, setSecurityLoading] = useState(false)
+  const [securityError, setSecurityError] = useState('')
+  const [securityFetched, setSecurityFetched] = useState(false)
+  const [securityIsDemo, setSecurityIsDemo] = useState(true)
+
   useEffect(() => {
     const result = processData(MOCK_STOCK, MOCK_CONSUMO, '', DEFAULT_PARAMS)
     setData(result)
@@ -1044,6 +1276,22 @@ export default function Page() {
       oportunidadeFinanceira: caixaLiberavel + receitaEmRisco,
     }
   }, [data])
+
+
+  const securityClusters = useMemo(() => analyzeSecurityOrders(securityOrders), [securityOrders])
+
+  const securitySummary = useMemo(() => {
+    const totalValue = securityOrders.reduce((s, o) => s + Number(o.total || 0), 0)
+    const alto = securityClusters.filter(c => c.riskLevel === 'alto').length
+    const medio = securityClusters.filter(c => c.riskLevel === 'medio').length
+    const baixo = securityClusters.filter(c => c.riskLevel === 'baixo').length
+    const uniqueAddresses = new Set(securityOrders.map(o => normalizeText(o.billingAddress)).filter(Boolean)).size
+    const uniqueContacts = new Set([
+      ...securityOrders.map(o => normalizeEmail(o.billingEmail)).filter(Boolean),
+      ...securityOrders.map(o => normalizePhone(o.billingPhone)).filter(v => v.length >= 8),
+    ]).size
+    return { totalOrders: securityOrders.length, totalValue, alto, medio, baixo, uniqueAddresses, uniqueContacts, clusterCount: securityClusters.length }
+  }, [securityOrders, securityClusters])
 
   const topDecisions = useMemo(() => {
     if (!data.length) return []
@@ -1265,6 +1513,42 @@ export default function Page() {
     })
   }
 
+
+  async function fetchSecurityData() {
+    setSecurityLoading(true)
+    setSecurityError('')
+
+    try {
+      const response = await fetch('/api/woocommerce/orders?days=7&includeRiskStatuses=true', { method: 'GET', cache: 'no-store' })
+      const contentType = response.headers.get('content-type') || ''
+      const result = contentType.includes('application/json') ? await response.json() : { ok: false, raw: await response.text() }
+
+      if (Array.isArray(result?.riskOrders) && result.riskOrders.length > 0) {
+        setSecurityOrders(result.riskOrders.map((o: any) => ({
+          id: Number(o.id),
+          number: String(o.number ?? o.id ?? ''),
+          status: String(o.status ?? ''),
+          total: Number(o.total || 0),
+          dateCreated: String(o.dateCreated ?? o.date_created ?? ''),
+          billingName: String(o.billingName ?? ''),
+          billingEmail: String(o.billingEmail ?? ''),
+          billingPhone: String(o.billingPhone ?? ''),
+          billingAddress: String(o.billingAddress ?? ''),
+        })))
+        setSecurityIsDemo(false)
+      } else {
+        setSecurityIsDemo(true)
+        setSecurityError('A rota ainda não retornou riskOrders. Mantive dados de demonstração para validar a aba. Ajuste /api/woocommerce/orders para aceitar days=7&includeRiskStatuses=true.')
+      }
+    } catch (error: any) {
+      setSecurityIsDemo(true)
+      setSecurityError(error?.message || 'Não foi possível buscar pedidos de risco. Mantive dados de demonstração.')
+    } finally {
+      setSecurityLoading(false)
+      setSecurityFetched(true)
+    }
+  }
+
   async function testWooCommerceConnection() {
     setWcLoading(true)
     setWcError('')
@@ -1340,6 +1624,27 @@ export default function Page() {
           riscoRupturaResidual: simulation.riscoRupturaResidual,
           caixaLiberado: simulation.caixaLiberado,
         },
+
+        seguranca: {
+          fonteDemo: securityIsDemo,
+          totalPedidosAnalisados: securitySummary.totalOrders,
+          valorTotalTentativas: securitySummary.totalValue,
+          clustersAltoRisco: securitySummary.alto,
+          clustersMedioRisco: securitySummary.medio,
+          totalClusters: securitySummary.clusterCount,
+          principaisClusters: securityClusters.slice(0, 8).map(c => ({
+            nivel: c.riskLevel,
+            score: c.riskScore,
+            tipo: c.clusterType,
+            motivos: c.reasons,
+            pedidos: c.orderNumbers,
+            status: c.statuses,
+            valorTotal: c.totalValue,
+            primeiraTentativa: c.firstAttempt,
+            ultimaTentativa: c.lastAttempt,
+            acaoSugerida: c.suggestedAction,
+          })),
+        },
         skus: data.slice(0, 150).map((d) => ({
           codigo: d.codigo,
           produto: d.produto,
@@ -1394,6 +1699,7 @@ export default function Page() {
     { id: 'import-ai', label: 'Pedido recomendado', icon: 'truck', badge: importOrderData.length },
     { id: 'not-buy', label: 'Não recomprar', icon: 'block', badge: notBuyData.length },
     { id: 'simulation', label: 'Simulação', icon: 'sliders' },
+    { id: 'security', label: 'Radar de pedidos', icon: 'shield', badge: securitySummary.clusterCount },
     { id: 'integrations', label: 'Integrações', icon: 'plug' },
   ]
 
@@ -2411,6 +2717,112 @@ export default function Page() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+
+        {/* RADAR DE PEDIDOS */}
+        {tab === 'security' && (
+          <div className="space-y-6">
+            <SectionTitle
+              eyebrow="Segurança WooCommerce"
+              title="Radar de pedidos suspeitos"
+              subtitle="Analisa tentativas malsucedidas dos últimos 7 dias e agrupa padrões por e-mail, telefone, endereço e nome. A análise não acusa clientes, apenas prioriza revisão manual."
+              right={
+                <button
+                  onClick={fetchSecurityData}
+                  disabled={securityLoading}
+                  className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {securityLoading ? 'Buscando...' : 'Buscar últimos 7 dias'}
+                </button>
+              }
+            />
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <KpiCard label="Pedidos analisados" value={fmtNum(securitySummary.totalOrders)} sub={securityIsDemo ? 'Dados demo até a rota retornar riskOrders' : 'Dados reais do WooCommerce'} icon="shield" tone="cyan" />
+              <KpiCard label="Clusters alto risco" value={fmtNum(securitySummary.alto)} sub="Revisão manual prioritária" icon="alert" tone="rose" />
+              <KpiCard label="Valor em tentativas" value={fmtBRLcompact(securitySummary.totalValue)} sub="Soma dos pedidos com status de risco" icon="cash" tone="amber" />
+              <KpiCard label="Padrões encontrados" value={fmtNum(securitySummary.clusterCount)} sub={`${fmtNum(securitySummary.uniqueContacts)} contatos · ${fmtNum(securitySummary.uniqueAddresses)} endereços`} icon="target" tone="violet" />
+            </div>
+
+            {(securityError || securityIsDemo) && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-700">
+                <p className="font-semibold">Modo demonstração ativo</p>
+                <p className="mt-1">{securityError || 'Para usar dados reais, ajuste a rota /api/woocommerce/orders para retornar riskOrders quando chamada com days=7&includeRiskStatuses=true.'}</p>
+              </div>
+            )}
+
+            <GlassPanel className="overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-5">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">Padrões para revisão manual</h3>
+                  <p className="mt-1 text-sm text-slate-500">Ranking por score de risco, valor das tentativas e recorrência.</p>
+                </div>
+                <StatusPill label={securityFetched ? 'Consulta executada' : 'Aguardando consulta'} tone={securityFetched ? 'emerald' : 'amber'} />
+              </div>
+
+              {securityClusters.length === 0 ? (
+                <div className="p-5"><EmptyState title="Nenhum padrão suspeito" subtitle="Não encontramos concentração de falhas nos dados atuais." icon="shield" /></div>
+              ) : (
+                securityClusters.map(cluster => (
+                  <div key={cluster.id} className="border-b border-slate-100 p-5 last:border-b-0 transition hover:bg-slate-50/70">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <RiskBadge level={cluster.riskLevel} />
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600">Score {cluster.riskScore}</span>
+                          <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-500">{cluster.clusterType}</span>
+                        </div>
+
+                        <p className="mt-3 text-sm font-semibold text-slate-900">
+                          {fmtNum(cluster.orderCount)} pedidos · {fmtBRLcompact(cluster.totalValue)} em tentativas
+                        </p>
+
+                        <div className="mt-3 grid gap-2 text-sm text-slate-600">
+                          {cluster.reasons.map(reason => <p key={reason}>• {reason}</p>)}
+                        </div>
+                      </div>
+
+                      <div className="w-full rounded-xl border border-slate-200 bg-white p-4 lg:w-[320px]">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Ação sugerida</p>
+                        <p className="mt-2 text-sm font-semibold text-slate-900">{cluster.suggestedAction}</p>
+                        <p className="mt-3 text-xs leading-5 text-slate-500">
+                          Primeira tentativa: {cluster.firstAttempt ? fmtDateShort(cluster.firstAttempt) : 'n/a'}<br />
+                          Última tentativa: {cluster.lastAttempt ? fmtDateShort(cluster.lastAttempt) : 'n/a'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-3 md:grid-cols-4">
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Nomes</p>
+                        <p className="mt-1 line-clamp-2 text-xs text-slate-600">{cluster.displayNames.join(', ') || 'n/a'}</p>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">E-mails</p>
+                        <p className="mt-1 line-clamp-2 text-xs text-slate-600">{cluster.displayEmails.join(', ') || 'n/a'}</p>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Telefones</p>
+                        <p className="mt-1 line-clamp-2 text-xs text-slate-600">{cluster.displayPhones.join(', ') || 'n/a'}</p>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Pedidos</p>
+                        <p className="mt-1 line-clamp-2 text-xs text-slate-600">#{cluster.orderNumbers.join(', #')}</p>
+                      </div>
+                    </div>
+
+                    {cluster.displayAddresses.length > 0 && (
+                      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Endereço relacionado</p>
+                        <p className="mt-1 line-clamp-2 text-xs text-slate-600">{cluster.displayAddresses.slice(0, 2).join(' · ')}</p>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </GlassPanel>
           </div>
         )}
 

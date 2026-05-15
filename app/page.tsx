@@ -113,6 +113,12 @@ const DEFAULT_PARAMS: AppParams = {
   margemPadrao: 0.45,
 }
 
+// Modo Demo/Pitch: usa faturamento bruto de venda, não margem/lucro.
+// Enquanto a rota do WooCommerce não enviar receita por SKU de forma confiável,
+// filamentos PLA usam R$ 75 como preço médio bruto de venda para comunicar impacto financeiro.
+const PRECO_MEDIO_BRUTO_FILAMENTO = 75
+const USAR_FATURAMENTO_BRUTO_NO_PITCH = true
+
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
 const CLASS_LABELS: Record<Classification, string> = {
@@ -377,14 +383,14 @@ function buildMotivo(
   demandaAteReposicao: number,
   unidadesQuePodePerder: number,
 ): string {
-  const fontePreco = precoVendaFonte === 'woocommerce' ? 'preço médio real do WooCommerce' : 'preço estimado normalizado por custo + margem'
+  const fontePreco = precoVendaFonte === 'woocommerce' ? 'preço médio real do WooCommerce' : 'preço médio bruto estimado para pitch'
 
   switch (c) {
     case 'critico':
       if (!isFinite(dias) || dias <= 0) {
-        return `Vendeu ${fmtNum(consumo)} un em ${periodoDias} dias. Até a reposição chegar, a demanda projetada é ${fmtNum(demandaAteReposicao)} un; com ${fmtNum(estoqueUtil)} em estoque, podemos perder ${fmtNum(unidadesQuePodePerder)} un = ${fmtBRLcompact(receitaEmRisco)} (${fontePreco}).`
+        return `Vendeu ${fmtNum(consumo)} un em ${periodoDias} dias. Com ${fmtNum(estoqueUtil)} em estoque, o faturamento bruto potencial não atendido é ${fmtNum(unidadesQuePodePerder)} un = ${fmtBRLcompact(receitaEmRisco)} (${fontePreco}).`
       }
-      return `Vendeu ${fmtNum(consumo)} un em ${periodoDias} dias. Demanda até reposição: ${fmtNum(demandaAteReposicao)} un; cobertura atual ${Math.round(dias)}d; possível perda: ${fmtNum(unidadesQuePodePerder)} un = ${fmtBRLcompact(receitaEmRisco)}.`
+      return `Vendeu ${fmtNum(consumo)} un em ${periodoDias} dias. Cobertura atual ${Math.round(dias)}d; faturamento bruto potencial não atendido: ${fmtNum(unidadesQuePodePerder)} un = ${fmtBRLcompact(receitaEmRisco)}.`
     case 'ruptura':
       return `Cobertura crítica de ${Math.round(dias)}d. Demanda real de ${fmtNum(consumo)} un em ${periodoDias} dias pode virar venda perdida.`
     case 'atencao':
@@ -470,17 +476,21 @@ function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, pa
     const valorUnitario = valorUnitarioCalculado > 0 ? valorUnitarioCalculado : valorUnitarioMedioEstoque
     const margem = params.margemPadrao
 
-    // Receita que podemos deixar de ganhar usa o preço médio real vendido no WooCommerce.
-    // Se a rota ainda não enviar receita por SKU, usa estimativa normalizada por custo + margem.
-    // A normalização evita distorções de alguns SKUs da SANCO e deixa filamentos similares com preço similar.
+    // Receita que podemos deixar de ganhar usa faturamento bruto, não lucro líquido.
+    // Prioridade para preço médio real do WooCommerce.
+    // Fallback de demo/pitch: filamentos PLA usam R$ 75 como preço médio bruto de venda.
     const precoMedioVendaReal = consumo > 0 && receitaPeriodo > 0 ? receitaPeriodo / consumo : 0
+    const isFilamento = codigo.toUpperCase().startsWith('PLA') || produto.toUpperCase().includes('PLA')
     const precoVendaEstimadoSku = valorUnitario > 0 ? valorUnitario / (1 - margem) : 0
     const precoVendaEstimadoPortfolio = valorUnitarioMedioEstoque > 0 ? valorUnitarioMedioEstoque / (1 - margem) : precoVendaEstimadoSku
     const limiteInferiorPreco = precoVendaEstimadoPortfolio > 0 ? precoVendaEstimadoPortfolio * 0.70 : 0
     const limiteSuperiorPreco = precoVendaEstimadoPortfolio > 0 ? precoVendaEstimadoPortfolio * 1.30 : Number.POSITIVE_INFINITY
-    const precoVendaEstimado = precoVendaEstimadoSku > 0
+    const precoVendaEstimadoPorCusto = precoVendaEstimadoSku > 0
       ? Math.min(Math.max(precoVendaEstimadoSku, limiteInferiorPreco), limiteSuperiorPreco)
       : precoVendaEstimadoPortfolio
+    const precoVendaEstimado = USAR_FATURAMENTO_BRUTO_NO_PITCH && isFilamento
+      ? PRECO_MEDIO_BRUTO_FILAMENTO
+      : precoVendaEstimadoPorCusto
     const precoMedioVenda = precoMedioVendaReal > 0 ? precoMedioVendaReal : precoVendaEstimado
     const precoVendaFonte: 'woocommerce' | 'estimado' = precoMedioVendaReal > 0 ? 'woocommerce' : 'estimado'
     const precoVenda = precoMedioVenda
@@ -496,10 +506,16 @@ function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, pa
     const sugestaoCompra = Math.max(0, Math.ceil(estoqueIdeal - estoqueUtil))
     const valorSugestaoCompra = sugestaoCompra * valorUnitario
 
-    // Receita que pode ser perdida = preço do filamento x quantidade que podemos perder até a reposição chegar.
-    // Demanda até reposição usa somente lead time. Sugestão de compra usa lead time + segurança.
+    // Receita que pode ser perdida = preço médio bruto de venda x quantidade que podemos deixar de vender.
+    // Para o pitch/demo de hoje, quando o SKU está crítico, usamos a venda real do período como
+    // faturamento bruto potencial não atendido. Ex.: PLA Preto 3.063 un x R$ 75 = ~R$ 230 mil.
+    // A sugestão de compra continua usando lead time + estoque de segurança.
     const demandaAteReposicao = consumoDiario * params.leadTimeDias
-    const unidadesQuePodePerder = Math.max(0, demandaAteReposicao - estoqueUtil)
+    const perdaPorLeadTime = Math.max(0, demandaAteReposicao - estoqueUtil)
+    const perdaBrutaPeriodo = Math.max(0, consumo - estoqueUtil)
+    const unidadesQuePodePerder = USAR_FATURAMENTO_BRUTO_NO_PITCH && consumo > 0 && (estoqueUtil <= 0 || classification === 'critico' || classification === 'ruptura')
+      ? Math.max(perdaPorLeadTime, perdaBrutaPeriodo)
+      : perdaPorLeadTime
     const receitaEmRisco = unidadesQuePodePerder * precoMedioVenda
 
     // Caixa parado: estoque acima do necessário para cobrir lead time + segurança.
@@ -1354,7 +1370,11 @@ export default function Page() {
       const estoqueNec = d.consumoDiario * (sim.leadTimeDias + sim.estoqueSegurancaDias)
       const sug = Math.max(0, Math.ceil(estoqueNec - d.estoqueUtil))
       const demandaAteReposicao = d.consumoDiario * sim.leadTimeDias
-      const unidadesQuePodePerder = Math.max(0, demandaAteReposicao - d.estoqueUtil)
+      const perdaPorLeadTime = Math.max(0, demandaAteReposicao - d.estoqueUtil)
+      const perdaBrutaPeriodo = Math.max(0, d.consumo - d.estoqueUtil)
+      const unidadesQuePodePerder = USAR_FATURAMENTO_BRUTO_NO_PITCH && d.consumo > 0 && (d.estoqueUtil <= 0 || d.classification === 'critico' || d.classification === 'ruptura')
+        ? Math.max(perdaPorLeadTime, perdaBrutaPeriodo)
+        : perdaPorLeadTime
       const receitaEmRisco = unidadesQuePodePerder * d.precoMedioVenda
       return {
         ...d,

@@ -1835,6 +1835,9 @@ export default function Page() {
                   <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-600">
                     MVP Hackathon
                   </span>
+                  <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
+                    v2 · Inner 12
+                  </span>
                 </div>
                 <p className="mt-1 hidden text-xs text-slate-500 sm:block">Compra, estoque, vendas e caixa em um command center operacional.</p>
               </div>
@@ -1845,6 +1848,7 @@ export default function Page() {
                 <StatusPill label="WooCommerce conectado" tone="emerald" pulse />
                 <StatusPill label="SANCO CSV" tone="cyan" />
                 <StatusPill label="Somente filamentos" tone="amber" />
+                <StatusPill label="Compra em caixas de 12" tone="emerald" />
                 <StatusPill label="IA operacional" tone="violet" />
               </div>
               <button
@@ -3115,8 +3119,8 @@ export default function Page() {
 
       <footer className="mt-16 border-t border-slate-200 bg-white py-6">
         <div className="mx-auto flex max-w-screen-2xl flex-wrap items-center justify-between gap-3 px-4 text-xs text-slate-500 sm:px-6 lg:px-8">
-          <span>STL Business Stock Intelligence · MVP Hackathon</span>
-          <span>Venda real + estoque atual + IA operacional</span>
+          <span>STL Business Stock Intelligence · MVP Hackathon · v2 Inner 12</span>
+          <span>Venda real + estoque atual + IA operacional · apenas filamentos</span>
         </div>
       </footer>
     </div>

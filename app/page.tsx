@@ -347,6 +347,65 @@ function parseCSV(text: string): Record<string, string>[] {
   }).filter(r => r[headers[0]] && r[headers[0]] !== 'Total')
 }
 
+
+function isFilamentProduct(input: string | undefined | null): boolean {
+  const text = normalizeText(String(input || ''))
+  if (!text) return false
+
+  const includeTerms = [
+    'filamento',
+    'pla',
+    'petg',
+    'abs',
+    'asa',
+    'tpu',
+    'silk',
+    'matte',
+    'pla+',
+    'pla plus',
+  ]
+
+  const excludeTerms = [
+    'impressora',
+    'printer',
+    'bambulab',
+    'bambu lab',
+    'a1 combo',
+    'a1 mini',
+    'ams',
+    'snapmaker',
+    'creality',
+    'ender',
+    'k1',
+    'k1c',
+    'prusa',
+    'anycubic',
+    'curso',
+    'academy',
+    'stlacademy',
+    'assinatura',
+    'bonus',
+    'bônus',
+    'acelerador',
+    'parcelado',
+    'pagamento',
+    'frete',
+    'suporte',
+    'mentoria',
+    'licenca',
+    'licença',
+    'download',
+    'arquivo',
+    'modelo 3d',
+    'stlflix',
+  ]
+
+  const hasInclude = includeTerms.some(term => text.includes(term))
+  const hasExclude = excludeTerms.some(term => text.includes(term))
+
+  return hasInclude && !hasExclude
+}
+
 // ─── BUSINESS LOGIC ────────────────────────────────────────────────────────
 
 function classify(estoqueUtil: number, diasCobertura: number, consumo: number, semEstoque: boolean): Classification {
@@ -454,6 +513,9 @@ function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, pa
     const stock = stockMap.get(codigo)
     const consumoData = consumoMap.get(codigo)
     const produto = stock?.produto || consumoData?.produto || codigo
+
+    if (!isFilamentProduct(`${codigo} ${produto}`)) return
+
     const qtdDisponivel = stock?.qtdDisp ?? 0
     const qtdBloqueada = stock?.qtdBloq ?? 0
     const qtdTotal = stock?.qtdTotal ?? qtdDisponivel + qtdBloqueada
@@ -480,7 +542,7 @@ function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, pa
     // Prioridade para preço médio real do WooCommerce.
     // Fallback de demo/pitch: filamentos PLA usam R$ 75 como preço médio bruto de venda.
     const precoMedioVendaReal = consumo > 0 && receitaPeriodo > 0 ? receitaPeriodo / consumo : 0
-    const isFilamento = codigo.toUpperCase().startsWith('PLA') || produto.toUpperCase().includes('PLA')
+    const isFilamento = isFilamentProduct(`${codigo} ${produto}`)
     const precoVendaEstimadoSku = valorUnitario > 0 ? valorUnitario / (1 - margem) : 0
     const precoVendaEstimadoPortfolio = valorUnitarioMedioEstoque > 0 ? valorUnitarioMedioEstoque / (1 - margem) : precoVendaEstimadoSku
     const limiteInferiorPreco = precoVendaEstimadoPortfolio > 0 ? precoVendaEstimadoPortfolio * 0.70 : 0
@@ -582,10 +644,18 @@ function escapeCsvValue(value: any) {
 
 function buildConsumoCsvFromWoo(skuSummary: any[]) {
   const rows = skuSummary
-    .filter((item) => item.sku && Number(item.quantity || 0) > 0)
+    .filter((item) => {
+      const sku = String(item.sku || '')
+      const name = String(item.name || item.product_name || item.sku || '')
+
+      return (
+        Number(item.quantity || 0) > 0 &&
+        isFilamentProduct(`${sku} ${name}`)
+      )
+    })
     .map((item) => {
       const sku = escapeCsvValue(item.sku)
-      const name = escapeCsvValue(item.name || item.sku)
+      const name = escapeCsvValue(item.name || item.product_name || item.sku)
       const quantity = Number(item.quantity || 0)
 
       // A rota pode retornar revenue, total, subtotal ou campos agregados equivalentes.
@@ -1757,6 +1827,7 @@ export default function Page() {
               <div className="hidden items-center gap-2 xl:flex">
                 <StatusPill label="WooCommerce conectado" tone="emerald" pulse />
                 <StatusPill label="SANCO CSV" tone="cyan" />
+                <StatusPill label="Somente filamentos" tone="amber" />
                 <StatusPill label="IA operacional" tone="violet" />
               </div>
               <button

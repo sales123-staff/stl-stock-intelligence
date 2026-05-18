@@ -119,6 +119,10 @@ const DEFAULT_PARAMS: AppParams = {
 const PRECO_MEDIO_BRUTO_FILAMENTO = 75
 const USAR_FATURAMENTO_BRUTO_NO_PITCH = true
 
+// Regra operacional de compra: filamentos chegam em caixa inner de 12 unidades.
+// Qualquer sugestão de compra precisa ser arredondada para múltiplos de 12.
+const INNER_BOX_FILAMENT_QTY = 12
+
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
 const CLASS_LABELS: Record<Classification, string> = {
@@ -347,6 +351,10 @@ function parseCSV(text: string): Record<string, string>[] {
   }).filter(r => r[headers[0]] && r[headers[0]] !== 'Total')
 }
 
+function roundUpToInnerBox(quantity: number): number {
+  if (!isFinite(quantity) || quantity <= 0) return 0
+  return Math.ceil(quantity / INNER_BOX_FILAMENT_QTY) * INNER_BOX_FILAMENT_QTY
+}
 
 function isFilamentProduct(input: string | undefined | null): boolean {
   const text = normalizeText(String(input || ''))
@@ -397,7 +405,6 @@ function isFilamentProduct(input: string | undefined | null): boolean {
     'download',
     'arquivo',
     'modelo 3d',
-    'stlflix',
   ]
 
   const hasInclude = includeTerms.some(term => text.includes(term))
@@ -565,7 +572,8 @@ function processData(stockRaw: string, consumoRaw: string, _mesesRaw: string, pa
     const classification = classify(estoqueUtil, diasCobertura, consumo, semEstoqueEncontrado)
 
     const estoqueIdeal = consumoDiario * (params.leadTimeDias + params.estoqueSegurancaDias)
-    const sugestaoCompra = Math.max(0, Math.ceil(estoqueIdeal - estoqueUtil))
+    const sugestaoCompraBase = Math.max(0, estoqueIdeal - estoqueUtil)
+    const sugestaoCompra = roundUpToInnerBox(sugestaoCompraBase)
     const valorSugestaoCompra = sugestaoCompra * valorUnitario
 
     // Receita que pode ser perdida = preço médio bruto de venda x quantidade que podemos deixar de vender.
@@ -1306,11 +1314,11 @@ export default function Page() {
   const [aiError, setAiError] = useState('')
   const [stockSearch, setStockSearch] = useState('')
 
-  const [securityOrders, setSecurityOrders] = useState<SecurityOrder[]>(MOCK_SECURITY_ORDERS)
+  const [securityOrders, setSecurityOrders] = useState<SecurityOrder[]>([])
   const [securityLoading, setSecurityLoading] = useState(false)
   const [securityError, setSecurityError] = useState('')
   const [securityFetched, setSecurityFetched] = useState(false)
-  const [securityIsDemo, setSecurityIsDemo] = useState(true)
+  const [securityIsDemo, setSecurityIsDemo] = useState(false)
 
   useEffect(() => {
     const result = processData(MOCK_STOCK, MOCK_CONSUMO, '', DEFAULT_PARAMS)
@@ -1438,7 +1446,8 @@ export default function Page() {
   const simulation = useMemo(() => {
     const customData = data.map(d => {
       const estoqueNec = d.consumoDiario * (sim.leadTimeDias + sim.estoqueSegurancaDias)
-      const sug = Math.max(0, Math.ceil(estoqueNec - d.estoqueUtil))
+      const sugBase = Math.max(0, estoqueNec - d.estoqueUtil)
+      const sug = roundUpToInnerBox(sugBase)
       const demandaAteReposicao = d.consumoDiario * sim.leadTimeDias
       const perdaPorLeadTime = Math.max(0, demandaAteReposicao - d.estoqueUtil)
       const perdaBrutaPeriodo = Math.max(0, d.consumo - d.estoqueUtil)
@@ -1627,17 +1636,25 @@ export default function Page() {
         })))
         setSecurityIsDemo(false)
       } else {
-        setSecurityIsDemo(true)
-        setSecurityError('A rota ainda não retornou riskOrders. Mantive dados de demonstração para validar a aba. Ajuste /api/woocommerce/orders para aceitar days=7&includeRiskStatuses=true.')
+        setSecurityOrders([])
+        setSecurityIsDemo(false)
+        setSecurityError(result?.error || 'A rota retornou 0 pedidos com status de risco nos últimos 7 dias.')
       }
     } catch (error: any) {
-      setSecurityIsDemo(true)
-      setSecurityError(error?.message || 'Não foi possível buscar pedidos de risco. Mantive dados de demonstração.')
+      setSecurityOrders([])
+      setSecurityIsDemo(false)
+      setSecurityError(error?.message || 'Não foi possível buscar pedidos de risco no WooCommerce.')
     } finally {
       setSecurityLoading(false)
       setSecurityFetched(true)
     }
   }
+
+  useEffect(() => {
+    if (tab === 'security' && !securityFetched && !securityLoading) {
+      fetchSecurityData()
+    }
+  }, [tab, securityFetched, securityLoading])
 
   async function testWooCommerceConnection() {
     setWcLoading(true)
@@ -2507,7 +2524,7 @@ export default function Page() {
             <SectionTitle
               eyebrow="Purchase Intelligence"
               title="Pedido recomendado"
-              subtitle="Lista priorizada por receita que pode ser perdida, demanda até reposição, cobertura e consumo real."
+              subtitle="Lista priorizada por receita que pode ser perdida, demanda até reposição, cobertura e consumo real. As quantidades são arredondadas para caixas inner de 12 filamentos."
               right={
                 <button onClick={() => exportCSV(importOrderData.map(d => ({
                   Codigo: d.codigo, Produto: d.produto, EstoqueAtual: d.estoqueUtil,
@@ -2831,16 +2848,16 @@ export default function Page() {
             />
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <KpiCard label="Pedidos analisados" value={fmtNum(securitySummary.totalOrders)} sub={securityIsDemo ? 'Dados demo até a rota retornar riskOrders' : 'Dados reais do WooCommerce'} icon="shield" tone="cyan" />
+              <KpiCard label="Pedidos analisados" value={fmtNum(securitySummary.totalOrders)} sub={securityFetched ? 'Dados reais do WooCommerce' : 'Aguardando consulta ao WooCommerce'} icon="shield" tone="cyan" />
               <KpiCard label="Clusters alto risco" value={fmtNum(securitySummary.alto)} sub="Revisão manual prioritária" icon="alert" tone="rose" />
               <KpiCard label="Valor em tentativas" value={fmtBRLcompact(securitySummary.totalValue)} sub="Soma dos pedidos com status de risco" icon="cash" tone="amber" />
               <KpiCard label="Padrões encontrados" value={fmtNum(securitySummary.clusterCount)} sub={`${fmtNum(securitySummary.uniqueContacts)} contatos · ${fmtNum(securitySummary.uniqueAddresses)} endereços`} icon="target" tone="violet" />
             </div>
 
-            {(securityError || securityIsDemo) && (
+            {securityError && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-700">
                 <p className="font-semibold">Modo demonstração ativo</p>
-                <p className="mt-1">{securityError || 'Para usar dados reais, ajuste a rota /api/woocommerce/orders para retornar riskOrders quando chamada com days=7&includeRiskStatuses=true.'}</p>
+                <p className="mt-1">{securityError}</p>
               </div>
             )}
 

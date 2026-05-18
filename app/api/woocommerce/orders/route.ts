@@ -1,283 +1,369 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from 'next/server'
 
 type WooOrder = {
-  id: number;
-  status: string;
-  date_created: string;
-  total: string;
-  currency?: string;
+  id: number
+  number?: string
+  status?: string
+  total?: string
+  date_created?: string
+  billing?: {
+    first_name?: string
+    last_name?: string
+    email?: string
+    phone?: string
+    address_1?: string
+    address_2?: string
+    city?: string
+    state?: string
+    postcode?: string
+    country?: string
+  }
+  shipping?: {
+    first_name?: string
+    last_name?: string
+    address_1?: string
+    address_2?: string
+    city?: string
+    state?: string
+    postcode?: string
+    country?: string
+  }
   line_items?: Array<{
-    id: number;
-    name: string;
-    product_id: number;
-    variation_id: number;
-    quantity: number;
-    subtotal: string;
-    total: string;
-    sku?: string;
-  }>;
-};
+    id?: number
+    product_id?: number
+    variation_id?: number
+    name?: string
+    sku?: string
+    quantity?: number
+    subtotal?: string
+    total?: string
+    price?: number
+  }>
+}
 
-type NormalizedOrder = {
-  id: number;
-  status: string;
-  date_created: string;
-  total: number;
-  currency: string;
-  items: Array<{
-    id: number;
-    product_id: number;
-    variation_id: number;
-    sku: string;
-    name: string;
-    quantity: number;
-    subtotal: number;
-    total: number;
-  }>;
-};
+const DEFAULT_VALID_STATUSES = ['processing', 'shipped-out']
+const RISK_STATUSES = ['failed', 'cancelled', 'pending', 'on-hold', 'refunded']
 
-function getRequiredEnv() {
-  const storeUrl = process.env.WC_STORE_URL;
-  const consumerKey = process.env.WC_CONSUMER_KEY;
-  const consumerSecret = process.env.WC_CONSUMER_SECRET;
+function cleanStoreUrl(url: string) {
+  return url.replace(/\/+$/, '')
+}
 
-  if (!storeUrl || !consumerKey || !consumerSecret) {
-    return {
-      ok: false as const,
-      error: "Credenciais WooCommerce não configuradas.",
-      required: ["WC_STORE_URL", "WC_CONSUMER_KEY", "WC_CONSUMER_SECRET"],
-    };
+function parseMoney(value: unknown): number {
+  if (value === undefined || value === null) return 0
+  const n = Number(String(value).replace(',', '.'))
+  return Number.isFinite(n) ? n : 0
+}
+
+function getAuthHeader() {
+  const key = process.env.WC_CONSUMER_KEY
+  const secret = process.env.WC_CONSUMER_SECRET
+
+  if (!key || !secret) return ''
+
+  return `Basic ${Buffer.from(`${key}:${secret}`).toString('base64')}`
+}
+
+function daysAgoISO(days: number) {
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+  return date.toISOString()
+}
+
+async function fetchOrdersForStatus(params: {
+  storeUrl: string
+  status: string
+  afterISO: string
+  maxPages?: number
+}) {
+  const { storeUrl, status, afterISO, maxPages = 50 } = params
+  const authHeader = getAuthHeader()
+  const allOrders: WooOrder[] = []
+
+  for (let page = 1; page <= maxPages; page++) {
+    const url = new URL(`${storeUrl}/wp-json/wc/v3/orders`)
+
+    url.searchParams.set('status', status)
+    url.searchParams.set('after', afterISO)
+    url.searchParams.set('per_page', '100')
+    url.searchParams.set('page', String(page))
+    url.searchParams.set('orderby', 'date')
+    url.searchParams.set('order', 'desc')
+
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        Authorization: authHeader,
+        Accept: 'application/json',
+      },
+      cache: 'no-store',
+    })
+
+    const contentType = response.headers.get('content-type') || ''
+    const payload = contentType.includes('application/json')
+      ? await response.json()
+      : await response.text()
+
+    if (!response.ok) {
+      throw new Error(
+        `Erro ao consultar WooCommerce para status "${status}". HTTP ${response.status}: ${
+          typeof payload === 'string'
+            ? payload.slice(0, 500)
+            : JSON.stringify(payload).slice(0, 500)
+        }`
+      )
+    }
+
+    const pageOrders = Array.isArray(payload) ? payload : []
+    allOrders.push(...pageOrders)
+
+    if (pageOrders.length < 100) break
   }
 
+  return allOrders
+}
+
+function mapRiskOrder(order: WooOrder) {
+  const billing = order.billing || {}
+  const shipping = order.shipping || {}
+
+  const billingName = `${billing.first_name || shipping.first_name || ''} ${
+    billing.last_name || shipping.last_name || ''
+  }`.trim()
+
+  const addressParts = [
+    billing.address_1 || shipping.address_1,
+    billing.address_2 || shipping.address_2,
+    billing.city || shipping.city,
+    billing.state || shipping.state,
+    billing.postcode || shipping.postcode,
+    billing.country || shipping.country,
+  ].filter(Boolean)
+
   return {
-    ok: true as const,
-    storeUrl,
-    consumerKey,
-    consumerSecret,
-  };
+    id: Number(order.id),
+    number: String(order.number || order.id || ''),
+    status: String(order.status || ''),
+    total: parseMoney(order.total),
+    dateCreated: String(order.date_created || ''),
+    billingName,
+    billingEmail: String(billing.email || ''),
+    billingPhone: String(billing.phone || ''),
+    billingAddress: addressParts.join(', '),
+  }
 }
 
-function getDateMonthsAgo(months: number) {
-  const date = new Date();
-  date.setMonth(date.getMonth() - months);
-  return date.toISOString();
-}
-
-function normalizeOrder(order: WooOrder): NormalizedOrder {
-  return {
-    id: order.id,
-    status: order.status,
-    date_created: order.date_created,
-    total: Number(order.total || 0),
-    currency: order.currency || "BRL",
-    items:
-      order.line_items?.map((item) => ({
-        id: item.id,
-        product_id: item.product_id,
-        variation_id: item.variation_id,
-        sku: item.sku || "",
-        name: item.name,
-        quantity: Number(item.quantity || 0),
-        subtotal: Number(item.subtotal || 0),
-        total: Number(item.total || 0),
-      })) || [],
-  };
-}
-
-function buildSkuSummary(orders: NormalizedOrder[]) {
-  const map = new Map<
+function buildSkuSummary(orders: WooOrder[]) {
+  const skuMap = new Map<
     string,
     {
-      sku: string;
-      name: string;
-      quantity: number;
-      revenue: number;
-      orders: number;
-      lastOrderDate: string;
+      product_id: number
+      variation_id: number
+      sku: string
+      name: string
+      quantity: number
+      subtotal: number
+      total: number
+      revenue: number
     }
-  >();
+  >()
+
+  let totalItems = 0
+  let totalRevenue = 0
 
   for (const order of orders) {
-    for (const item of order.items) {
-      const sku = item.sku || `product_${item.product_id}`;
+    totalRevenue += parseMoney(order.total)
 
-      const current = map.get(sku);
+    for (const item of order.line_items || []) {
+      const rawSku = String(item.sku || '').trim()
+      const sku = rawSku || `produto-${item.product_id || item.id || 'sem-sku'}`
+      const quantity = Number(item.quantity || 0)
+      const subtotal = parseMoney(item.subtotal)
+      const total = parseMoney(item.total)
+      const revenue = total || subtotal
+
+      if (!sku || quantity <= 0) continue
+
+      totalItems += quantity
+
+      const current = skuMap.get(sku)
 
       if (!current) {
-        map.set(sku, {
+        skuMap.set(sku, {
+          product_id: Number(item.product_id || 0),
+          variation_id: Number(item.variation_id || 0),
           sku,
-          name: item.name,
-          quantity: item.quantity,
-          revenue: item.total,
-          orders: 1,
-          lastOrderDate: order.date_created,
-        });
+          name: String(item.name || sku),
+          quantity,
+          subtotal,
+          total,
+          revenue,
+        })
       } else {
-        current.quantity += item.quantity;
-        current.revenue += item.total;
-        current.orders += 1;
-
-        if (new Date(order.date_created) > new Date(current.lastOrderDate)) {
-          current.lastOrderDate = order.date_created;
-        }
+        current.quantity += quantity
+        current.subtotal += subtotal
+        current.total += total
+        current.revenue += revenue
       }
     }
   }
 
-  return Array.from(map.values()).sort((a, b) => b.quantity - a.quantity);
-}
+  const skuSummary = Array.from(skuMap.values()).sort(
+    (a, b) => b.quantity - a.quantity
+  )
 
-async function fetchOrdersByStatus(params: {
-  storeUrl: string;
-  consumerKey: string;
-  consumerSecret: string;
-  status: string;
-  after: string;
-}) {
-  const cleanStoreUrl = params.storeUrl.replace(/\/$/, "");
-  const perPage = 100;
-  const maxPages = 30;
-
-  const allOrders: WooOrder[] = [];
-
-  for (let page = 1; page <= maxPages; page++) {
-    const url = new URL(`${cleanStoreUrl}/wp-json/wc/v3/orders`);
-
-    url.searchParams.set("consumer_key", params.consumerKey);
-    url.searchParams.set("consumer_secret", params.consumerSecret);
-    url.searchParams.set("status", params.status);
-    url.searchParams.set("after", params.after);
-    url.searchParams.set("per_page", String(perPage));
-    url.searchParams.set("page", String(page));
-    url.searchParams.set("orderby", "date");
-    url.searchParams.set("order", "desc");
-
-    const response = await fetch(url.toString(), {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-      },
-      cache: "no-store",
-    });
-
-    const text = await response.text();
-
-    let json: any;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      throw new Error(
-        `WooCommerce não retornou JSON válido para status "${params.status}". Status HTTP: ${response.status}`
-      );
-    }
-
-    if (!response.ok) {
-      throw new Error(
-        `Erro ao consultar WooCommerce para status "${params.status}". HTTP ${response.status}: ${JSON.stringify(json)}`
-      );
-    }
-
-    if (!Array.isArray(json) || json.length === 0) {
-      break;
-    }
-
-    allOrders.push(...json);
-
-    if (json.length < perPage) {
-      break;
-    }
+  return {
+    skuSummary,
+    skuCount: skuSummary.length,
+    totalItems,
+    totalRevenue,
   }
-
-  return allOrders;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const env = getRequiredEnv();
+    const storeUrlRaw = process.env.WC_STORE_URL
+    const key = process.env.WC_CONSUMER_KEY
+    const secret = process.env.WC_CONSUMER_SECRET
 
-    if (!env.ok) {
-      return NextResponse.json(env, { status: 500 });
+    if (!storeUrlRaw || !key || !secret) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            'Credenciais WooCommerce não configuradas. Configure WC_STORE_URL, WC_CONSUMER_KEY e WC_CONSUMER_SECRET.',
+        },
+        { status: 500 }
+      )
     }
 
-    const after = getDateMonthsAgo(3);
+    const storeUrl = cleanStoreUrl(storeUrlRaw)
+    const searchParams = req.nextUrl.searchParams
 
-    /*
-      Status aceitos:
-      - processing = processando
-      - shipped-out = enviado
+    const includeRiskStatuses =
+      searchParams.get('includeRiskStatuses') === 'true' ||
+      searchParams.get('mode') === 'security'
 
-      Status ignorados:
-      - pending = aguardando pagamento
-      - cancelled/canceled = cancelado
-      - on-hold = em espera
-      - failed = falhou
-      - refunded = reembolsado
-      - checkout-draft = rascunho
-    */
-    const allowedStatuses = ["processing", "shipped-out"];
+    const days = Math.max(
+      1,
+      Number(
+        searchParams.get('days') ||
+          searchParams.get('period') ||
+          (includeRiskStatuses ? 7 : 90)
+      )
+    )
 
-    const blockedStatuses = new Set([
-      "pending",
-      "cancelled",
-      "canceled",
-      "on-hold",
-      "failed",
-      "refunded",
-      "checkout-draft",
-      "trash",
-      "auto-draft",
-    ]);
+    const afterISO = daysAgoISO(days)
 
-    const results = await Promise.all(
-      allowedStatuses.map((status) =>
-        fetchOrdersByStatus({
-          storeUrl: env.storeUrl,
-          consumerKey: env.consumerKey,
-          consumerSecret: env.consumerSecret,
+    if (includeRiskStatuses) {
+      const batches = await Promise.all(
+        RISK_STATUSES.map((status) =>
+          fetchOrdersForStatus({
+            storeUrl,
+            status,
+            afterISO,
+            maxPages: 10,
+          })
+        )
+      )
+
+      const orders = batches.flat()
+      const riskOrders = orders.map(mapRiskOrder)
+
+      return NextResponse.json({
+        ok: true,
+        source: 'WooCommerce',
+        mode: 'security',
+        period: {
+          days,
+          after: afterISO,
+        },
+        filters: {
+          includedStatuses: RISK_STATUSES,
+        },
+        count: orders.length,
+        totalRiskValue: riskOrders.reduce(
+          (sum, order) => sum + Number(order.total || 0),
+          0
+        ),
+        riskOrders,
+      })
+    }
+
+    const statusParam = searchParams.get('status')
+
+    const statuses = statusParam
+      ? statusParam
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : DEFAULT_VALID_STATUSES
+
+    const batches = await Promise.all(
+      statuses.map((status) =>
+        fetchOrdersForStatus({
+          storeUrl,
           status,
-          after,
+          afterISO,
+          maxPages: 50,
         })
       )
-    );
+    )
 
-    const rawOrders = results.flat();
-
-    const orders = rawOrders
-      .filter((order) => allowedStatuses.includes(order.status))
-      .filter((order) => !blockedStatuses.has(order.status))
-      .map(normalizeOrder);
-
-    const skuSummary = buildSkuSummary(orders);
-
-    const totalRevenue = orders.reduce((acc, order) => acc + order.total, 0);
-    const totalItems = skuSummary.reduce((acc, sku) => acc + sku.quantity, 0);
+    const orders = batches.flat()
+    const skuData = buildSkuSummary(orders)
 
     return NextResponse.json({
       ok: true,
-      source: "WooCommerce",
+      source: 'WooCommerce',
+      mode: 'demand',
       period: {
-        months: 3,
-        after,
+        days,
+        after: afterISO,
       },
       filters: {
-        includedStatuses: allowedStatuses,
-        excludedStatuses: Array.from(blockedStatuses),
+        includedStatuses: statuses,
+        excludedStatuses: [
+          'pending',
+          'cancelled',
+          'canceled',
+          'on-hold',
+          'failed',
+          'refunded',
+          'checkout-draft',
+          'trash',
+          'auto-draft',
+        ],
       },
       count: orders.length,
-      totalRevenue,
-      totalItems,
-      skuCount: skuSummary.length,
-      orders: orders.slice(0, 100),
-      skuSummary,
-      syncedAt: new Date().toISOString(),
-    });
+      totalRevenue: skuData.totalRevenue,
+      totalItems: skuData.totalItems,
+      skuCount: skuData.skuCount,
+      skuSummary: skuData.skuSummary,
+      orders: orders.slice(0, 100).map((order) => ({
+        id: order.id,
+        status: order.status,
+        date_created: order.date_created,
+        total: parseMoney(order.total),
+        currency: 'BRL',
+        items: (order.line_items || []).map((item) => ({
+          id: item.id,
+          product_id: item.product_id,
+          variation_id: item.variation_id,
+          sku: item.sku,
+          name: item.name,
+          quantity: item.quantity,
+          subtotal: parseMoney(item.subtotal),
+          total: parseMoney(item.total),
+        })),
+      })),
+    })
   } catch (error: any) {
     return NextResponse.json(
       {
         ok: false,
-        error: error?.message || "Erro ao consultar WooCommerce.",
+        error: error?.message || 'Erro ao consultar WooCommerce.',
       },
       { status: 500 }
-    );
+    )
   }
 }
